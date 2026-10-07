@@ -274,6 +274,7 @@ class ResearchWorkflowState(BaseModel):
     # Flow Control & Metadata
     iteration: int = 1
     max_iterations: int = 3
+    max_documents: int = 10
     is_completed: bool = False
     current_stage: str = "query_understanding"
     errors: Annotated[List[str], merge_errors] = Field(default_factory=list)

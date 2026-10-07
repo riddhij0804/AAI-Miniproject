@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Activity, ArrowUpRight, BookOpen, Check, ChevronRight, CircleAlert,
-  Compass, Database, FileCheck2, FileText, FlaskConical, Globe2, LayoutDashboard,
+  ClipboardList, Compass, Database, FileCheck2, FileText, FlaskConical, Globe2, LayoutDashboard,
   LoaderCircle, Menu, Network, PanelLeft, Play, Search, Share2, ShieldCheck,
   Sparkles, X,
 } from 'lucide-react';
@@ -22,6 +22,13 @@ const stages = [
   ['report_writing', 'Writing the research brief'],
   ['citation_validation', 'Auditing citations'],
 ];
+
+const depthPresets = {
+  1: { label: 'Quick · 10 docs', documents: 10 },
+  2: { label: 'Balanced · 25 docs', documents: 25 },
+  3: { label: 'Thorough · 50 docs', documents: 50 },
+  4: { label: 'Deep · 100 docs', documents: 100 },
+};
 
 const percent = (value) => `${Math.round((value || 0) * 100)}%`;
 const host = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return 'Unknown source'; } };
@@ -50,7 +57,7 @@ export default function App() {
     try {
       const response = await fetch('/api/orchestration/research', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: question.trim(), max_iterations: iterations }),
+        body: JSON.stringify({ question: question.trim(), max_iterations: iterations, max_documents: depthPresets[iterations].documents }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`);
@@ -72,7 +79,7 @@ export default function App() {
 
   const report = result?.final_report;
   const navItems = [
-    ['brief', 'Research brief', LayoutDashboard], ['sources', 'Source discovery', Globe2],
+    ['brief', 'Research brief', LayoutDashboard], ['record', 'Run record', ClipboardList], ['sources', 'Source discovery', Globe2],
     ['credibility', 'Credibility', ShieldCheck], ['documents', 'Documents & chunks', FileText],
     ['evidence', 'Evidence & metrics', FileCheck2], ['retrieval', 'Hybrid RAG', Database],
     ['graph', 'Evidence graph', Share2], ['evaluation', 'Evaluation', Activity],
@@ -92,10 +99,11 @@ export default function App() {
       <main className="content">
         <div className="content-heading"><div><span className="eyebrow">Autonomous research</span><h1>{result ? 'Your research brief' : 'What would you like to understand?'}</h1></div>{result && <button className="quiet-button" onClick={() => { setResult(null); setError(''); setView('brief'); }}><Sparkles size={15} /> New research</button>}</div>
         {result && <nav className="result-nav" aria-label="Research result sections">{navItems.map(([key, label, Icon]) => <button key={key} className={view === key ? 'active' : ''} onClick={() => setView(key)}><Icon size={15} /><span>{label}</span></button>)}</nav>}
-        {!result && !running && <section className="composer-card"><div className="composer-label"><span className="pulse-dot" /> Ask the research agent</div><form onSubmit={runResearch}><textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask a question worth investigating..." rows={4} /><div className="composer-footer"><div className="composer-meta"><FlaskConical size={15} /> Searches, reads, verifies, and cites public sources</div><div className="composer-controls"><label>Depth <select value={iterations} onChange={(event) => setIterations(Number(event.target.value))}><option value={1}>Quick</option><option value={2}>Balanced</option><option value={3}>Thorough</option><option value={4}>Deep</option></select></label><button className="run-button" type="submit"><Play size={16} fill="currentColor" /> Start research</button></div></div></form><div className="preset-row"><span>Try a starting point</span>{presets.map((preset) => <button key={preset.label} className="preset" onClick={() => setQuestion(preset.question)}><span>{preset.label}</span><small>{preset.description}</small></button>)}</div></section>}
+        {!result && !running && <section className="composer-card"><div className="composer-label"><span className="pulse-dot" /> Ask the research agent</div><form onSubmit={runResearch}><textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask a question worth investigating..." rows={4} /><div className="composer-footer"><div className="composer-meta"><FlaskConical size={15} /> Searches, reads, verifies, and cites public sources</div><div className="composer-controls"><label>Depth <select value={iterations} onChange={(event) => setIterations(Number(event.target.value))}><option value={1}>{depthPresets[1].label}</option><option value={2}>{depthPresets[2].label}</option><option value={3}>{depthPresets[3].label}</option><option value={4}>{depthPresets[4].label}</option></select></label><button className="run-button" type="submit"><Play size={16} fill="currentColor" /> Start research</button></div></div></form><div className="preset-row"><span>Try a starting point</span>{presets.map((preset) => <button key={preset.label} className="preset" onClick={() => setQuestion(preset.question)}><span>{preset.label}</span><small>{preset.description}</small></button>)}</div></section>}
         {running && <RunProgress question={question} />}
         {error && <div className="error-banner"><CircleAlert size={18} /><div><strong>Research run failed</strong><span>{error}</span></div><button className="icon-button" onClick={() => setError('')} aria-label="Dismiss error"><X size={16} /></button></div>}
-        {result && view === 'brief' && <><BriefView result={result} report={report} onRunAgain={() => runResearch()} /><RunRecord result={result} /></>}
+        {result && view === 'brief' && <BriefView result={result} report={report} onRunAgain={() => runResearch()} />}
+        {result && view === 'record' && <RunRecord result={result} />}
         {result && view === 'evidence' && <EvidenceView result={result} />}
         {result && view === 'sources' && <SourcesView result={result} />}
         {result && view === 'credibility' && <CredibilityView result={result} />}
@@ -120,7 +128,7 @@ function BriefView({ result, report, onRunAgain }) {
   const verification = result.verification_report;
   const validation = result.citation_validation;
   const supportRate = verification?.total_claims_checked ? verification.supported_claims_count / verification.total_claims_checked : 0;
-  return <><div className="result-meta"><span className="success-label"><Check size={14} /> Research complete</span><span>Session {result.session_id}</span><span>{new Date(report.created_at).toLocaleString()}</span><button className="text-button" onClick={onRunAgain}>Run again <ArrowUpRight size={14} /></button></div><section className="report-hero"><div className="report-kicker">Research brief</div><h2>{report.title}</h2><p>{report.executive_summary}</p></section><div className="stat-strip"><Stat label="Sources read" value={result.discovered_sources_count} icon={Globe2} /><Stat label="Claims checked" value={verification?.total_claims_checked || result.extracted_claims_count} icon={FileCheck2} /><Stat label="Supported" value={percent(supportRate)} icon={ShieldCheck} /><Stat label="Citations" value={validation?.valid_citations_count ?? report.references.length} icon={BookOpen} /></div><div className="brief-grid"><div><section className="panel report-section"><SectionHeading eyebrow="Findings" title="What the evidence says" count={report.key_findings.length} />{report.key_findings.map((finding, index) => <article className="finding" key={`${finding.topic_title}-${index}`}><div className="finding-number">0{index + 1}</div><div><h3>{finding.topic_title}</h3><p>{finding.summary}</p>{finding.claims?.map((claim) => <div className="claim-line" key={claim}><Check size={14} />{claim}</div>)}</div></article>)}</section><section className="panel report-section"><SectionHeading eyebrow="Method" title="How this was researched" /><p className="body-copy">{report.research_scope_and_methodology}</p><p className="body-copy">{report.supporting_evidence_summary}</p></section>{report.conclusion && <section className="conclusion"><span className="eyebrow">Bottom line</span><p>{report.conclusion}</p></section>}</div><aside className="right-rail"><TrustCard result={result} /><SourceList sources={result.sources} /><ReviewNotes report={report} contradictions={result.contradictions} /></aside></div></>;
+  return <><div className="result-meta"><span className="success-label"><Check size={14} /> Research complete</span><span>Session {result.session_id}</span><span>{new Date(report.created_at).toLocaleString()}</span><button className="text-button" onClick={onRunAgain}>Run again <ArrowUpRight size={14} /></button></div><section className="report-hero"><div className="report-kicker">Research brief</div><h2>{report.title}</h2><p>{report.executive_summary}</p></section><div className="stat-strip"><Stat label="Sources read" value={result.discovered_sources_count} icon={Globe2} /><Stat label="Claims checked" value={verification?.total_claims_checked || result.extracted_claims_count} icon={FileCheck2} /><Stat label="Supported" value={percent(supportRate)} icon={ShieldCheck} /><Stat label="Citations" value={validation?.valid_citations_count ?? report.references.length} icon={BookOpen} /></div><div className="brief-grid"><div><section className="panel report-section"><SectionHeading eyebrow="Findings" title="What the evidence says" count={report.key_findings.length} />{report.key_findings.map((finding, index) => <article className="finding" key={`${finding.topic_title}-${index}`}><div className="finding-number">0{index + 1}</div><div><h3>{finding.topic_title}</h3><p>{finding.summary}</p>{finding.claims?.slice(0, 3).map((claim) => <div className="claim-line" key={claim}><Check size={14} />{claim}</div>)}{finding.claims?.length > 3 && <p className="more-note">+ {finding.claims.length - 3} more verified claim{finding.claims.length - 3 === 1 ? '' : 's'} in Run record</p>}</div></article>)}</section><section className="panel report-section"><SectionHeading eyebrow="Method" title="How this was researched" /><p className="body-copy">{report.research_scope_and_methodology}</p><p className="body-copy">{report.supporting_evidence_summary}</p></section>{report.conclusion && <section className="conclusion"><span className="eyebrow">Bottom line</span><p>{report.conclusion}</p></section>}</div><aside className="right-rail"><TrustCard result={result} /><SourceList sources={result.sources} /><ReviewNotes report={report} contradictions={result.contradictions} /></aside></div></>;
 }
 
 function RunRecord({ result }) {

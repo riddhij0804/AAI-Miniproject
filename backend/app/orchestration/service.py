@@ -35,6 +35,7 @@ class ResearchExecutionRequest(BaseModel):
     question: str = Field(..., min_length=3, description="The research question to investigate")
     session_id: Optional[str] = Field(None, description="Optional custom session identifier")
     max_iterations: int = Field(default=3, ge=1, le=5, description="Maximum research iterations")
+    max_documents: int = Field(default=10, ge=1, le=100, description="Maximum documents to fetch and read")
 
 
 class ResearchExecutionResponse(BaseModel):
@@ -86,6 +87,7 @@ class OrchestrationService:
             question=request.question,
             session_id=session_id,
             max_iterations=request.max_iterations,
+            max_documents=request.max_documents,
         )
 
         self._session_cache[session_id] = state

@@ -171,9 +171,15 @@ class ResearchWorkflowOrchestrator:
         new_evidences = []
         new_cred = []
         errors = []
+        remaining_documents = max(0, state.max_documents - len(state.documents))
+        seen_source_urls = {source.url for source in state.discovered_sources if source.url}
 
         # Execute tasks concurrently or sequentially depending on task parallel flag
         for task in pending_tasks:
+            if remaining_documents <= 0:
+                logger.info("Document budget exhausted; skipping remaining research tasks.")
+                break
+
             task.status = "in_progress"
             try:
                 # 1. Discover Sources
@@ -182,18 +188,26 @@ class ResearchWorkflowOrchestrator:
                     query=task.query,
                     research_objective=task.objective,
                     source_preferences=task.source_preferences,
-                    max_results=4,
+                    max_results=min(4, remaining_documents),
                 )
                 sources = await self.research_service.discover_sources(disc_req)
                 new_sources.extend(sources)
 
                 if sources:
+                    unread_sources = [
+                        source for source in sources
+                        if source.url and source.url not in seen_source_urls
+                    ]
+                    selected_sources = unread_sources[:remaining_documents]
+                    seen_source_urls.update(source.url for source in selected_sources)
+                    remaining_documents -= len(selected_sources)
+
                     # 2. Assess Credibility
-                    cred_assessments = self.research_service.assess_source_credibility(sources)
+                    cred_assessments = self.research_service.assess_source_credibility(selected_sources)
                     new_cred.extend(cred_assessments)
 
                     # 3. Read Documents
-                    docs = await self.research_service.read_documents(sources)
+                    docs = await self.research_service.read_documents(selected_sources)
                     new_docs.extend(docs)
 
                     # 4. Extract Grounded Evidence
@@ -207,7 +221,10 @@ class ResearchWorkflowOrchestrator:
                     new_evidences.extend(ext_res.evidence_records)
 
                 task.status = "completed"
-                task.result_summary = f"Gathered {len(sources)} source(s), {len(new_claims)} claim(s)."
+                task.result_summary = (
+                    f"Gathered {len(sources)} source(s), read {len(selected_sources) if sources else 0} document(s), "
+                    f"{len(new_claims)} claim(s)."
+                )
 
             except Exception as e:
                 logger.error(f"Error executing task '{task.task_id}': {e}")
@@ -403,6 +420,7 @@ class ResearchWorkflowOrchestrator:
         question: str,
         session_id: Optional[str] = None,
         max_iterations: int = 3,
+        max_documents: int = 10,
     ) -> ResearchWorkflowState:
         """Execute end-to-end research workflow from user question to final validated report."""
         import uuid
@@ -411,6 +429,7 @@ class ResearchWorkflowOrchestrator:
             session_id=sess_id,
             original_question=question,
             max_iterations=max_iterations,
+            max_documents=max_documents,
         )
 
         config = {"configurable": {"thread_id": sess_id}}
