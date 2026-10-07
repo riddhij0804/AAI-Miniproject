@@ -167,7 +167,7 @@ context = get_research_context(session_id="session-01")
 ```bash
 pytest tests/ -v
 ```
-All 28 tests run in ~3 seconds with zero external network dependencies (in-memory SQLite, in-memory Qdrant, deterministic feature embeddings).
+All 49 tests run with zero external network dependencies (in-memory SQLite, in-memory Qdrant, deterministic feature embeddings, and mocked tool execution).
 
 ### 2. Run the FastAPI Service
 ```bash
@@ -175,7 +175,14 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 Interactive API documentation will be available at `http://localhost:8000/docs`.
 
-### 3. Run the Automated Evaluation Benchmark
+### 3. Run the Frontend Dashboard
+```bash
+cd frontend
+npm run dev
+```
+Access the interactive Autonomous Research Console at `http://localhost:5173`.
+
+### 4. Run the Automated Evaluation Benchmark
 ```bash
 python -c "
 import asyncio
@@ -194,3 +201,42 @@ async def main():
 asyncio.run(main())
 "
 ```
+
+---
+
+## Autonomous Orchestration & Decision-Making Layer (LangGraph)
+
+The orchestration layer coordinates the multi-agent decision cycle over a stateful directed graph:
+
+```text
+[ User Query ]
+       ↓
+[ Query Understanding Agent ] (Scope, Concepts, Ambiguity Resolution)
+       ↓
+[ Research Planner Agent ]    (Multi-Task Decomposition, Parallel Batches)
+       ↓
+[ Research Execution Node ]   (Calls Research Intelligence Subsystem)
+       ↓
+[ Evidence Verifier Agent ]   (Provenance Check, Support Scoring, Contradiction Detection)
+       ↓
+[ Research Reviewer Agent ] ──(Gaps Found & Iterations < Max)──→ [ Replanning Node ]
+       ↓ (Objective Satisfied OR Max Iterations Reached)                  ↓
+[ Report Writer Agent ]                                       [ Research Execution Node ]
+       ↓
+[ Citation Validation Agent ] (100% Ground Truth Audit: Real Sources & Quotes)
+       ↓
+[ Final Validated Report ]
+```
+
+### Key Orchestration Components
+
+- **Query Understanding Agent** (`backend.app.orchestration.agents.query_understanding`): Translates raw queries into validated specifications, extracts key concepts, formulates sub-questions, and handles under-specified or ambiguous queries.
+- **Research Planner Agent** (`backend.app.orchestration.agents.planner`): Decomposes objectives into focused tasks with parallel/sequential dependency ordering and manages targeted replanning.
+- **Evidence Verification Agent** (`backend.app.orchestration.agents.verifier`): Deterministically resolves evidence provenance to stored sources and chunks, evaluates lexical/semantic support strength, and flags directional contradictions.
+- **Research Reviewer Agent** (`backend.app.orchestration.agents.reviewer`): Evaluates coverage against sub-questions, detects information gaps, enforces bounded loop stopping conditions, and triggers targeted replanning.
+- **Report Writer Agent** (`backend.app.orchestration.agents.writer`): Synthesizes findings across research tasks into an evidence-grounded report with executive summary, methodology, key findings, contradictions, and disclosed limitations.
+- **Citation Validation Agent** (`backend.app.orchestration.agents.validator`): Validates that every citation exists in persistent storage with exact verbatim passages, ensuring zero hallucinated citations.
+- **LangGraph State Machine** (`backend.app.orchestration.graph`): Stateful LangGraph workflow with typed state, robust reducers, error resilience, and MemorySaver checkpointing.
+- **FastAPI Endpoints**:
+  - `POST /api/orchestration/research`: Submit research query and execute autonomous research workflow.
+  - `GET /api/orchestration/sessions/{session_id}`: Inspect execution status, plan, verification report, and final research report.

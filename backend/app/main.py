@@ -13,6 +13,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from backend.app.orchestration.state import ResearchWorkflowState
+from backend.app.schemas.common import generate_uuid
+import json
+from fastapi import Request
+from fastapi.responses import StreamingResponse
 
 from backend.app.config import settings
 from backend.app.database import init_db
@@ -28,6 +33,11 @@ from backend.app.services.research_service import (
     ClaimEvidenceView,
     EvidenceExtractionResult,
     default_research_service,
+)
+from backend.app.orchestration.service import (
+    ResearchExecutionRequest,
+    ResearchExecutionResponse,
+    default_orchestration_service,
 )
 
 # Configure logging
@@ -186,3 +196,22 @@ async def run_evaluation_benchmark_endpoint():
     except Exception as e:
         logger.error(f"Error running evaluation: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/orchestration/research", response_model=ResearchExecutionResponse, tags=["Orchestration"])
+async def run_autonomous_research_endpoint(payload: ResearchExecutionRequest):
+    """Execute end-to-end autonomous research workflow via LangGraph orchestrator."""
+    try:
+        return await default_orchestration_service.execute_research(payload)
+    except Exception as e:
+        logger.error(f"Error in research orchestration: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/orchestration/sessions/{session_id}", response_model=ResearchExecutionResponse, tags=["Orchestration"])
+def get_orchestration_session_endpoint(session_id: str):
+    """Retrieve full execution status, plan, verification report, and final research report."""
+    res = default_orchestration_service.get_session_state(session_id)
+    if not res:
+        raise HTTPException(status_code=404, detail=f"Orchestration session '{session_id}' not found.")
+    return res
