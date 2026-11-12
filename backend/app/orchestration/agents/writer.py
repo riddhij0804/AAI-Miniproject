@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List, Optional
 
 from backend.app.orchestration.llm import LLMClient, default_llm_client
+from backend.app.config import settings
 from backend.app.orchestration.state import (
     EvidenceVerificationReport,
     FinalResearchReport,
@@ -48,6 +49,26 @@ class ReportWriterAgent:
             f.claim_id for f in verification_report.claim_findings if f.is_supported
         }
         verified_claims = [c for c in claims if c.id in supported_claim_ids] or claims
+        evidence_source_ids = {
+            evidence.id: evidence.source_id for evidence in evidence_records
+        }
+        source_buckets: Dict[str, List[Claim]] = {}
+        for claim in verified_claims:
+            source_id = next(
+                (evidence_source_ids[evidence_id] for evidence_id in claim.evidence_ids if evidence_id in evidence_source_ids),
+                "unknown",
+            )
+            source_buckets.setdefault(source_id, []).append(claim)
+        diversified_claims: List[Claim] = []
+        while source_buckets and len(diversified_claims) < settings.MAX_REPORT_CITATIONS:
+            for source_id in list(source_buckets):
+                bucket = source_buckets[source_id]
+                diversified_claims.append(bucket.pop(0))
+                if not bucket:
+                    del source_buckets[source_id]
+                if len(diversified_claims) >= settings.MAX_REPORT_CITATIONS:
+                    break
+        verified_claims = diversified_claims
 
         # Construct references list with real ground truth
         references: List[ReportCitation] = []
@@ -68,6 +89,10 @@ class ReportWriterAgent:
                             credibility_score=src.credibility_score if src else None,
                         )
                     )
+                    if len(references) >= settings.MAX_REPORT_CITATIONS:
+                        break
+            if len(references) >= settings.MAX_REPORT_CITATIONS:
+                break
 
         # Build contradiction descriptions
         contradiction_summaries: List[str] = [c.reasoning for c in contradictions]
@@ -183,4 +208,3 @@ class ReportWriterAgent:
             f"Ongoing monitoring, rigorous corroboration, and targeted follow-up studies are critical "
             f"to address remaining uncertainties identified in the scope of this review."
         )
-

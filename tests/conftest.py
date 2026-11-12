@@ -16,6 +16,23 @@ from backend.app.schemas.common import DocumentType, SourceType, generate_uuid
 from backend.app.schemas.document import Document, DocumentChunk
 from backend.app.schemas.source import Source
 from backend.app.services.research_service import ResearchIntelligenceService
+from backend.app.orchestration.llm import default_llm_client
+
+
+@pytest.fixture(autouse=True)
+def explicit_local_llm_for_orchestration_tests(request, monkeypatch):
+    """Keep orchestration tests deterministic without weakening production fail-closed behavior."""
+    if not request.module.__name__.endswith(
+        ("test_orchestration_agents", "test_orchestration_api", "test_orchestration_workflow")
+    ):
+        return
+
+    async def generate_json(system_prompt=None, user_prompt=None, fallback_handler=None, **_kwargs):
+        if fallback_handler is None:
+            raise AssertionError("This deterministic test requires an explicit structured response.")
+        return fallback_handler()
+
+    monkeypatch.setattr(default_llm_client, "generate_json", generate_json)
 
 
 @pytest.fixture

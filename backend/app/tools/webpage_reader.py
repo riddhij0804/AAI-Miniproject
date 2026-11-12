@@ -41,14 +41,26 @@ class WebpageReaderTool(BaseTool):
         timeout = params.timeout_seconds or self.timeout
         headers = {"User-Agent": settings.DOC_READER_USER_AGENT}
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
-            try:
-                response = await client.get(params.url)
-            except httpx.HTTPError as e:
-                raise RuntimeError(f"HTTP request failed for '{params.url}': {e}") from e
+        fetch_url = params.url
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, headers=headers) as client:
+            for _ in range(3):
+                try:
+                    response = await client.get(fetch_url)
+                except httpx.HTTPError as e:
+                    raise RuntimeError(f"HTTP request failed for '{fetch_url}': {e}") from e
+                if not response.is_redirect:
+                    break
+                location = response.headers.get("location")
+                redirect_url = str(httpx.URL(fetch_url).join(location)) if location else ""
+                is_safe, error_reason = URLValidator.is_safe_url(redirect_url)
+                if not is_safe:
+                    raise SecurityError(f"Rejected unsafe redirect: {error_reason}")
+                fetch_url = redirect_url
+            else:
+                raise RuntimeError(f"Too many redirects fetching '{params.url}'")
 
             if response.status_code >= 400:
-                raise RuntimeError(f"HTTP error {response.status_code} fetching '{params.url}'")
+                raise RuntimeError(f"HTTP error {response.status_code} fetching '{fetch_url}'")
 
             content_bytes = response.content
             if len(content_bytes) > settings.DOC_READER_MAX_BYTES:
@@ -60,7 +72,7 @@ class WebpageReaderTool(BaseTool):
             html_text = response.text
 
         # 3. Parse HTML and extract clean readable text
-        extracted_data = self._parse_html(html_text, params.url)
+        extracted_data = self._parse_html(html_text, fetch_url)
 
         # 4. Check for prompt injection in extracted text (warn and sanitize)
         has_injection, pattern = PromptInjectionGuard.contains_injection_pattern(extracted_data["content"])

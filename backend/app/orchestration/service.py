@@ -100,11 +100,34 @@ class OrchestrationService:
             return self._format_response(self._session_cache[session_id])
         return None
 
+    async def get_session_state_async(self, session_id: str) -> Optional[ResearchExecutionResponse]:
+        """Retrieve a session from memory or durable LangGraph checkpoints."""
+        cached = self.get_session_state(session_id)
+        if cached:
+            return cached
+        state = await self.orchestrator.load_checkpoint(session_id)
+        if state is None:
+            return None
+        self._session_cache[session_id] = state
+        return self._format_response(state)
+
     def _format_response(self, state: ResearchWorkflowState) -> ResearchExecutionResponse:
+        pending_tasks = bool(
+            state.plan
+            and any(task.status in {"pending", "in_progress"} for task in state.plan.tasks)
+        )
+        if pending_tasks:
+            status = "incomplete"
+        elif state.errors and not state.final_report:
+            status = "failed"
+        elif state.errors:
+            status = "completed_with_errors"
+        else:
+            status = "completed" if state.is_completed else state.current_stage
         return ResearchExecutionResponse(
             session_id=state.session_id,
             original_question=state.original_question,
-            status="completed" if state.is_completed else state.current_stage,
+            status=status,
             iteration_count=state.iteration,
             structured_query=state.structured_query,
             plan=state.plan,
@@ -127,4 +150,3 @@ class OrchestrationService:
 
 
 default_orchestration_service = OrchestrationService()
-

@@ -6,8 +6,9 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
+from backend.app.config import settings
 
 from backend.app.evidence.store import EvidenceStore, default_evidence_store
 from backend.app.orchestration.agents.planner import ResearchPlannerAgent
@@ -26,6 +27,7 @@ from backend.app.services.research_service import (
     ResearchIntelligenceService,
     default_research_service,
 )
+from backend.app.orchestration.llm import LLMUnavailableError, default_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +55,17 @@ class ResearchWorkflowOrchestrator:
         self.writer_agent = writer_agent or ReportWriterAgent()
         self.validator_agent = validator_agent or CitationValidationAgent(store=store)
         self.store = store or default_evidence_store
-        self.checkpointer = checkpointer or MemorySaver()
+        self._checkpointer_context = None
+        self.checkpointer = checkpointer
 
         # Build and compile graph
-        self.graph = self._build_graph()
+        self.graph = self._build_graph() if self.checkpointer is not None else None
 
-    def _build_graph(self):
+    def close(self) -> None:
+        """Close the durable checkpoint connection owned by this orchestrator."""
+        self._checkpointer_context = None
+
+    def _build_graph(self, checkpointer: Optional[Any] = None):
         """Construct the stateful LangGraph workflow with nodes and conditional branching."""
         builder = StateGraph(ResearchWorkflowState)
 
@@ -96,7 +103,7 @@ class ResearchWorkflowOrchestrator:
         builder.add_edge("report_writing", "citation_validation")
         builder.add_edge("citation_validation", END)
 
-        return builder.compile(checkpointer=self.checkpointer)
+        return builder.compile(checkpointer=checkpointer or self.checkpointer)
 
     # --- Node Implementations ---
 
@@ -174,62 +181,43 @@ class ResearchWorkflowOrchestrator:
         remaining_documents = max(0, state.max_documents - len(state.documents))
         seen_source_urls = {source.url for source in state.discovered_sources if source.url}
 
-        # Execute tasks concurrently or sequentially depending on task parallel flag
-        for task in pending_tasks:
-            if remaining_documents <= 0:
-                logger.info("Document budget exhausted; skipping remaining research tasks.")
+        # Execute dependency-ready tasks in genuine concurrent batches. A task is
+        # eligible only when every declared dependency has completed.
+        completed_ids = {t.task_id for t in state.plan.tasks if t.status == "completed"}
+        while remaining_documents > 0:
+            ready = [
+                task for task in pending_tasks
+                if task.status == "pending"
+                and all(dep in completed_ids for dep in task.dependencies)
+            ]
+            if not ready:
+                unresolved = [task.task_id for task in pending_tasks if task.status == "pending"]
+                if unresolved:
+                    errors.append(f"Unresolvable task dependencies: {', '.join(unresolved)}")
                 break
-
-            task.status = "in_progress"
-            try:
-                # 1. Discover Sources
-                disc_req = SourceDiscoveryRequest(
-                    task_id=task.task_id,
-                    query=task.query,
-                    research_objective=task.objective,
-                    source_preferences=task.source_preferences,
-                    max_results=min(4, remaining_documents),
-                )
-                sources = await self.research_service.discover_sources(disc_req)
-                new_sources.extend(sources)
-
-                if sources:
-                    unread_sources = [
-                        source for source in sources
-                        if source.url and source.url not in seen_source_urls
-                    ]
-                    selected_sources = unread_sources[:remaining_documents]
-                    seen_source_urls.update(source.url for source in selected_sources)
-                    remaining_documents -= len(selected_sources)
-
-                    # 2. Assess Credibility
-                    cred_assessments = self.research_service.assess_source_credibility(selected_sources)
-                    new_cred.extend(cred_assessments)
-
-                    # 3. Read Documents
-                    docs = await self.research_service.read_documents(selected_sources)
-                    new_docs.extend(docs)
-
-                    # 4. Extract Grounded Evidence
-                    ext_res = await self.research_service.extract_evidence(
-                        documents=docs,
-                        objective=task.objective,
-                        session_id=state.session_id,
-                        task_id=task.task_id,
-                    )
-                    new_claims.extend(ext_res.claims)
-                    new_evidences.extend(ext_res.evidence_records)
-
+            batch = ready if all(task.can_run_in_parallel for task in ready) else ready[:1]
+            budget_each = max(1, remaining_documents // len(batch))
+            results = await asyncio.gather(
+                *(self._execute_research_task(task, state.session_id, budget_each) for task in batch),
+                return_exceptions=True,
+            )
+            for task, result in zip(batch, results):
+                if isinstance(result, Exception):
+                    task.status = "failed"
+                    errors.append(f"Task '{task.title}' failed: {result}")
+                    continue
+                task_result = result
                 task.status = "completed"
-                task.result_summary = (
-                    f"Gathered {len(sources)} source(s), read {len(selected_sources) if sources else 0} document(s), "
-                    f"{len(new_claims)} claim(s)."
-                )
-
-            except Exception as e:
-                logger.error(f"Error executing task '{task.task_id}': {e}")
-                task.status = "failed"
-                errors.append(f"Task '{task.title}' failed: {str(e)}")
+                completed_ids.add(task.task_id)
+                task.result_summary = task_result["summary"]
+                new_sources.extend(task_result["sources"])
+                new_docs.extend(task_result["documents"])
+                new_claims.extend(task_result["claims"])
+                new_evidences.extend(task_result["evidence"])
+                new_cred.extend(task_result["credibility"])
+                remaining_documents -= task_result["selected_count"]
+            if not any(task.status == "pending" for task in pending_tasks):
+                break
 
         duration_ms = (time.perf_counter() - start_t) * 1000
         audit_entry = {
@@ -253,6 +241,41 @@ class ResearchWorkflowOrchestrator:
             "errors": errors,
             "current_stage": "evidence_verification",
             "audit_logs": [audit_entry],
+        }
+
+    async def _execute_research_task(
+        self, task: PlanTask, session_id: str, document_budget: int
+    ) -> Dict[str, Any]:
+        """Run discovery, reading, and extraction for one independent task."""
+        task.status = "in_progress"
+        request = SourceDiscoveryRequest(
+            task_id=task.task_id,
+            query=task.query,
+            research_objective=task.objective,
+            source_preferences=task.source_preferences,
+            max_results=min(4, document_budget),
+        )
+        sources = await self.research_service.discover_sources(request)
+        selected = [source for source in sources if source.url][:document_budget]
+        credibility = self.research_service.assess_source_credibility(selected)
+        documents = await self.research_service.read_documents(selected)
+        extraction = await self.research_service.extract_evidence(
+            documents=documents,
+            objective=task.objective,
+            session_id=session_id,
+            task_id=task.task_id,
+        )
+        return {
+            "sources": sources,
+            "documents": documents,
+            "claims": extraction.claims,
+            "evidence": extraction.evidence_records,
+            "credibility": credibility,
+            "selected_count": len(selected),
+            "summary": (
+                f"Gathered {len(sources)} source(s), read {len(selected)} document(s), "
+                f"{len(extraction.claims)} claim(s)."
+            ),
         }
 
     async def _evidence_verification_node(self, state: ResearchWorkflowState) -> Dict[str, Any]:
@@ -423,6 +446,10 @@ class ResearchWorkflowOrchestrator:
         max_documents: int = 10,
     ) -> ResearchWorkflowState:
         """Execute end-to-end research workflow from user question to final validated report."""
+        if not default_llm_client.has_active_key:
+            raise LLMUnavailableError(
+                "Research execution is blocked: configure GEMINI_API_KEY or GROQ_API_KEY."
+            )
         import uuid
         sess_id = session_id or f"sess-{uuid.uuid4().hex[:8]}"
         initial_state = ResearchWorkflowState(
@@ -433,11 +460,38 @@ class ResearchWorkflowOrchestrator:
         )
 
         config = {"configurable": {"thread_id": sess_id}}
-        final_output_dict = await self.graph.ainvoke(initial_state, config=config)
+        existing_state = await self.graph.aget_state(config) if self.graph is not None else None
+        if existing_state and existing_state.values and existing_state.values.get("is_completed"):
+            return ResearchWorkflowState.model_validate(existing_state.values)
+        graph_input: Optional[ResearchWorkflowState] = initial_state
+        if existing_state and existing_state.next:
+            graph_input = None
+        if self.graph is not None:
+            final_output_dict = await self.graph.ainvoke(graph_input, config=config)
+        else:
+            async with AsyncSqliteSaver.from_conn_string(settings.CHECKPOINT_DATABASE_PATH) as checkpointer:
+                self.graph = self._build_graph(checkpointer)
+                try:
+                    existing_state = await self.graph.aget_state(config)
+                    if existing_state and existing_state.values and existing_state.values.get("is_completed"):
+                        return ResearchWorkflowState.model_validate(existing_state.values)
+                    graph_input = None if existing_state and existing_state.next else initial_state
+                    final_output_dict = await self.graph.ainvoke(graph_input, config=config)
+                finally:
+                    self.graph = None
 
         # Reconstruct typed state model from LangGraph output dictionary
         return ResearchWorkflowState.model_validate(final_output_dict)
 
+    async def load_checkpoint(self, session_id: str) -> Optional[ResearchWorkflowState]:
+        """Load a persisted workflow snapshot without executing any nodes."""
+        config = {"configurable": {"thread_id": session_id}}
+        async with AsyncSqliteSaver.from_conn_string(settings.CHECKPOINT_DATABASE_PATH) as checkpointer:
+            graph = self._build_graph(checkpointer)
+            snapshot = await graph.aget_state(config)
+            if not snapshot or not snapshot.values:
+                return None
+            return ResearchWorkflowState.model_validate(snapshot.values)
+
 
 default_orchestrator = ResearchWorkflowOrchestrator()
-

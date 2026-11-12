@@ -139,19 +139,8 @@ class EvidenceExtractorAgent:
             matched = clean_chunk[idx : idx + len(clean_quote)]
             return True, matched
 
-        # 2. Normalized punctuation check
-        norm_q = re.sub(r"[^\w\s]", "", clean_quote.lower())
-        norm_c = re.sub(r"[^\w\s]", "", clean_chunk.lower())
-        if norm_q in norm_c:
-            return True, clean_quote
-
-        # 3. Fuzzy sequence matcher fallback for minor OCR/whitespace variation
-        matcher = difflib.SequenceMatcher(None, clean_quote.lower(), clean_chunk.lower())
-        match = matcher.find_longest_match(0, len(clean_quote), 0, len(clean_chunk))
-        if match.size / len(clean_quote) >= self.fuzzy_threshold:
-            matched_slice = clean_chunk[match.b : match.b + match.size]
-            return True, matched_slice
-
+        # Do not accept punctuation-normalized or fuzzy text: those paths can
+        # return text that was not actually present in the source.
         return False, ""
 
     async def _extract_from_chunk(self, chunk: DocumentChunk, research_objective: str) -> List[RawExtractedClaim]:

@@ -41,7 +41,7 @@ class BaseEmbeddingService(ABC):
 class FastEmbedService(BaseEmbeddingService):
     """High-performance local embeddings using FastEmbed and ONNX Runtime."""
 
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5", dimension: int = 384):
+    def __init__(self, model_name: str = settings.EMBEDDING_MODEL_NAME, dimension: int = 384):
         super().__init__(dimension=dimension)
         self.model_name = model_name
         self._model = None
@@ -53,21 +53,30 @@ class FastEmbedService(BaseEmbeddingService):
             self._model = TextEmbedding(model_name=self.model_name)
             logger.info(f"Initialized FastEmbed model: {self.model_name}")
         except Exception as e:
-            logger.warning(f"Could not initialize FastEmbed ({e}). Will fall back to HashEmbeddingService.")
-            self._model = None
+            raise RuntimeError(f"FastEmbed model '{self.model_name}' could not be initialized: {e}") from e
 
     def embed_text(self, text: str) -> List[float]:
-        if not self._model:
-            return HashEmbeddingService(self.dimension).embed_text(text)
+        if self._model is None:
+            raise RuntimeError("FastEmbed model is not initialized")
         embeddings = list(self._model.embed([text]))
         vec = np.array(embeddings[0], dtype=np.float32)
+        if vec.size != self.dimension:
+            raise ValueError(f"Embedding dimension {vec.size} does not match configured {self.dimension}")
         return self.normalize_vector(vec).tolist()
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        if not self._model:
-            return HashEmbeddingService(self.dimension).embed_batch(texts)
+        if self._model is None:
+            raise RuntimeError("FastEmbed model is not initialized")
         embeddings = list(self._model.embed(texts))
-        return [self.normalize_vector(np.array(e, dtype=np.float32)).tolist() for e in embeddings]
+        if len(embeddings) != len(texts):
+            raise ValueError("Embedding provider returned an incorrect batch size")
+        result = []
+        for embedding in embeddings:
+            vec = np.array(embedding, dtype=np.float32)
+            if vec.size != self.dimension:
+                raise ValueError(f"Embedding dimension {vec.size} does not match configured {self.dimension}")
+            result.append(self.normalize_vector(vec).tolist())
+        return result
 
 
 class HashEmbeddingService(BaseEmbeddingService):
@@ -112,15 +121,20 @@ class HashEmbeddingService(BaseEmbeddingService):
 def get_embedding_service() -> BaseEmbeddingService:
     """Factory creating the configured embedding service."""
     provider = settings.EMBEDDING_PROVIDER.lower()
-    if provider == "hash" or provider == "mock":
+    if provider in {"hash", "mock"}:
+        if settings.ENVIRONMENT.lower() not in {"development", "test"}:
+            raise RuntimeError("Hash embeddings are restricted to development and test environments.")
         return HashEmbeddingService(settings.VECTOR_DIMENSION)
     try:
-        service = FastEmbedService(dimension=settings.VECTOR_DIMENSION)
-        if service._model is not None:
-            return service
-    except Exception as e:
-        logger.warning(f"Failed to create FastEmbedService ({e}), falling back to HashEmbeddingService")
-    return HashEmbeddingService(settings.VECTOR_DIMENSION)
+        return FastEmbedService(
+            model_name=settings.EMBEDDING_MODEL_NAME,
+            dimension=settings.VECTOR_DIMENSION,
+        )
+    except Exception:
+        if settings.ENVIRONMENT.lower() in {"development", "test"} and provider == "auto":
+            logger.warning("FastEmbed unavailable; using explicitly labeled development hash embeddings.")
+            return HashEmbeddingService(settings.VECTOR_DIMENSION)
+        raise
 
 
 # Global default embedding service

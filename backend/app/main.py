@@ -39,6 +39,7 @@ from backend.app.orchestration.service import (
     ResearchExecutionResponse,
     default_orchestration_service,
 )
+from backend.app.orchestration.llm import LLMUnavailableError
 
 # Configure logging
 logging.basicConfig(
@@ -66,8 +67,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -203,15 +204,18 @@ async def run_autonomous_research_endpoint(payload: ResearchExecutionRequest):
     """Execute end-to-end autonomous research workflow via LangGraph orchestrator."""
     try:
         return await default_orchestration_service.execute_research(payload)
+    except LLMUnavailableError as e:
+        logger.error("Research blocked by LLM configuration: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error(f"Error in research orchestration: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/orchestration/sessions/{session_id}", response_model=ResearchExecutionResponse, tags=["Orchestration"])
-def get_orchestration_session_endpoint(session_id: str):
+async def get_orchestration_session_endpoint(session_id: str):
     """Retrieve full execution status, plan, verification report, and final research report."""
-    res = default_orchestration_service.get_session_state(session_id)
+    res = await default_orchestration_service.get_session_state_async(session_id)
     if not res:
         raise HTTPException(status_code=404, detail=f"Orchestration session '{session_id}' not found.")
     return res

@@ -42,22 +42,30 @@ class PDFReaderTool(BaseTool):
 
             timeout = params.timeout_seconds or self.timeout
             headers = {"User-Agent": settings.DOC_READER_USER_AGENT}
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
-                try:
-                    response = await client.get(target)
-                except httpx.HTTPError as e:
-                    raise RuntimeError(f"Failed to fetch PDF from '{target}': {e}") from e
+            fetch_url = target
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, headers=headers) as client:
+                for _ in range(3):
+                    try:
+                        response = await client.get(fetch_url)
+                    except httpx.HTTPError as e:
+                        raise RuntimeError(f"Failed to fetch PDF from '{fetch_url}': {e}") from e
+                    if not response.is_redirect:
+                        break
+                    location = response.headers.get("location")
+                    redirect_url = str(httpx.URL(fetch_url).join(location)) if location else ""
+                    is_safe, error_reason = URLValidator.is_safe_url(redirect_url)
+                    if not is_safe:
+                        raise SecurityError(f"Rejected unsafe PDF redirect: {error_reason}")
+                    fetch_url = redirect_url
+                else:
+                    raise RuntimeError(f"Too many redirects fetching '{target}'")
 
                 if response.status_code >= 400:
-                    raise RuntimeError(f"HTTP error {response.status_code} fetching PDF '{target}'")
+                    raise RuntimeError(f"HTTP error {response.status_code} fetching PDF '{fetch_url}'")
 
                 pdf_bytes = response.content
         else:
-            # Local file path
-            if not os.path.exists(target):
-                raise FileNotFoundError(f"Local PDF file not found: {target}")
-            with open(target, "rb") as f:
-                pdf_bytes = f.read()
+            raise SecurityError("Only public HTTP(S) PDF URLs are accepted by the research API.")
 
         if len(pdf_bytes) > settings.DOC_READER_MAX_BYTES:
             raise ValueError(
@@ -68,7 +76,7 @@ class PDFReaderTool(BaseTool):
             raise ValueError(f"Target '{target}' does not appear to be a valid PDF (invalid magic header)")
 
         # 2. Extract page-by-page text
-        return await asyncio.to_thread(self._extract_pdf_pages, pdf_bytes, target)
+        return await asyncio.to_thread(self._extract_pdf_pages, pdf_bytes, fetch_url if target.startswith(("http://", "https://")) else target)
 
     def _extract_pdf_pages(self, pdf_bytes: bytes, target_ref: str) -> Dict[str, Any]:
         """Extract text page by page using PyMuPDF (fitz) with pypdf fallback."""

@@ -101,6 +101,14 @@ async def test_langgraph_orchestrator_end_to_end(evidence_store, test_retriever,
     assert len(report.references) >= 1
     assert report.references[0].source_url == "https://who.int/amr-overview"
 
+    recovered_state = await orchestrator.run(
+        question="What are the major causes of antibiotic resistance?",
+        session_id="session-test-e2e",
+        max_iterations=2,
+    )
+    assert recovered_state.final_report.report_id == report.report_id
+    assert len(recovered_state.evidence_records) == len(final_state.evidence_records)
+
 
 @pytest.mark.asyncio
 async def test_langgraph_orchestrator_tool_failure_handling(evidence_store, test_retriever):

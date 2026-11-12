@@ -174,6 +174,26 @@ class EvidenceStore:
                 metadata=model.metadata_json,
             )
 
+    def get_source_by_url(self, url: str) -> Optional[Source]:
+        """Load a persisted source by canonical URL for cross-process validation."""
+        with self.session_factory() as session:
+            model = session.execute(
+                select(SourceModel).where(SourceModel.url == url)
+            ).scalar_one_or_none()
+            if not model:
+                return None
+            return Source(
+                id=model.id,
+                url=model.url,
+                title=model.title,
+                source_type=SourceType(model.source_type) if model.source_type in [e.value for e in SourceType] else SourceType.WEBPAGE,
+                author=model.author,
+                published_at=model.published_at,
+                retrieved_at=model.retrieved_at,
+                credibility_score=model.credibility_score,
+                metadata=model.metadata_json,
+            )
+
     def save_credibility(self, assessment: CredibilityAssessment) -> CredibilityAssessment:
         with self.session_factory() as session:
             stmt = select(CredibilityAssessmentModel).where(CredibilityAssessmentModel.source_id == assessment.source_id)

@@ -45,7 +45,7 @@ class CitationValidationAgent:
             # 1. Check Source URL existence
             if ref.source_url not in known_urls:
                 # Fallback check in persistent store
-                stored_src = self.store.get_source(ref.source_url)
+                stored_src = self.store.get_source_by_url(ref.source_url)
                 if not stored_src and not any(s.url == ref.source_url for s in sources):
                     missing_sources.append(ref.source_url)
                     invalid_citations.append(f"Source URL '{ref.source_url}' not found in research database.")
@@ -93,4 +93,3 @@ class CitationValidationAgent:
                 f"Invalid: {len(invalid_citations)}. Flagged unsupported claims: {len(unsupported_flagged)}."
             ),
         )
-

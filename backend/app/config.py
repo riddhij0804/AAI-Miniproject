@@ -22,14 +22,15 @@ class Settings(BaseSettings):
     ECHO_SQL: bool = False
 
     # Vector Store (Qdrant)
-    QDRANT_LOCATION: str = ":memory:"  # ':memory:', local path, or URL
+    QDRANT_LOCATION: str = "./qdrant_data"  # local path or URL
     QDRANT_API_KEY: Optional[str] = None
     QDRANT_COLLECTION: str = "evidence_chunks"
     VECTOR_DIMENSION: int = 384  # Standard MiniLM dimension
+    CHECKPOINT_DATABASE_PATH: str = "./research_checkpoints.db"
 
     # Embeddings
-    EMBEDDING_PROVIDER: str = "auto"  # 'auto', 'sentence-transformers', 'hash', 'mock'
-    EMBEDDING_MODEL_NAME: str = "all-MiniLM-L6-v2"
+    EMBEDDING_PROVIDER: str = "auto"  # 'auto', 'fastembed', 'hash' (test/development only)
+    EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
 
     # Web Search
     TAVILY_API_KEY: Optional[str] = None
@@ -51,11 +52,17 @@ class Settings(BaseSettings):
     DEFAULT_CHUNK_OVERLAP: int = 150  # characters
 
     # LLM Settings for Extraction & Credibility
-    LLM_PROVIDER: str = "auto"  # 'auto', 'openai', 'gemini', 'heuristic'
+    LLM_PROVIDER: str = "auto"  # 'auto', 'gemini', 'groq', 'openai'
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
     GEMINI_API_KEY: Optional[str] = None
     GEMINI_MODEL: str = "gemini-1.5-flash"
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    LLM_TIMEOUT_SECONDS: float = 30.0
+    LLM_MAX_RETRIES: int = 2
+    MAX_REPORT_CITATIONS: int = 50
+    CORS_ALLOWED_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
 
     # Security
     BLOCKED_IP_NETWORKS: List[str] = [

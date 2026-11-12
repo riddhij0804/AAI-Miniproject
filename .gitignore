@@ -13,9 +13,13 @@ htmlcov/
 
 # Local runtime data
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
 qdrant_data/
+fastembed_cache/
+.cache/
 
 # Local secrets and environment overrides
 .env

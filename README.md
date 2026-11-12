@@ -4,6 +4,34 @@
 
 This repository implements the **Research Intelligence & Evidence** subsystem for the Autonomous Multi-Agent Research Engine. It is completely domain-independent (operating across medicine, energy, AI security, public policy, etc.) and provides clean, decoupled service interfaces for integration with the teammate's LangGraph orchestration layer.
 
+## Running the application
+
+Create a virtual environment, install `requirements.txt`, copy `.env.example` to
+`.env`, and configure at least one real `GEMINI_API_KEY` or `GROQ_API_KEY`.
+Research requests fail with HTTP 503 when no provider is configured or all
+configured providers fail; deterministic extraction is not used as a silent
+substitute for a missing LLM.
+
+Start the backend with `uvicorn backend.app.main:app --reload` and the frontend
+with `npm run dev` from `frontend/`. The default Qdrant local store is
+`./qdrant_data`, and LangGraph checkpoints are stored in
+`./research_checkpoints.db`. Both are reopened automatically after a backend
+restart using the same research session/thread ID.
+
+`EMBEDDING_PROVIDER=auto` uses the configured FastEmbed ONNX model and verifies
+the returned vector dimension. Hash embeddings are available only in development
+or test mode (`EMBEDDING_PROVIDER=hash`) and are labeled as non-semantic
+development embeddings.
+
+## Validation
+
+Run `pytest -q` for the backend suite and `npm run build` in `frontend/` for the
+production bundle. Tests use explicit local LLM stubs where network credentials
+are not appropriate; provider failover, malformed responses, Qdrant persistence,
+hybrid retrieval, citation grounding, security, and orchestration recovery are
+covered separately. Live Gemini/Groq success requires valid credentials and is
+reported separately from these deterministic tests.
+
 ---
 
 ## Subsystem Architecture & Pipeline

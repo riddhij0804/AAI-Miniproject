@@ -59,7 +59,10 @@ class HybridRetriever:
         self.vector_store.upsert_chunks(chunks, embeddings)
 
         # 2. BM25 Indexing
+        existing_ids = {c.id for c in self._bm25_corpus}
         for c in chunks:
+            if c.id in existing_ids:
+                continue
             self._bm25_corpus.append(c)
             tokens = self._tokenize(c.text)
             self._tokenized_corpus.append(tokens)
@@ -172,9 +175,17 @@ class HybridRetriever:
         max_rrf = max(rrf_scores.values()) if rrf_scores else 1.0
         final_results: List[RetrievalResult] = []
 
+        vector_ids = {item.chunk_id for item in vector_results}
+        bm25_ids = {chunk.id for chunk, _ in top_bm25}
         for cid in sorted_cids[:top_k]:
             data = chunk_map[cid]
             norm_score = round(rrf_scores[cid] / max_rrf, 4) if max_rrf > 0 else 0.0
+            if cid in vector_ids and cid in bm25_ids:
+                method = "hybrid"
+            elif cid in vector_ids:
+                method = "vector"
+            else:
+                method = "bm25"
             final_results.append(
                 RetrievalResult(
                     chunk_id=data["chunk_id"],
@@ -184,7 +195,7 @@ class HybridRetriever:
                     text=data["text"],
                     page_number=data["page_number"],
                     relevance_score=norm_score,
-                    retrieval_method="hybrid",
+                    retrieval_method=method,
                     metadata=data["metadata"],
                 )
             )
