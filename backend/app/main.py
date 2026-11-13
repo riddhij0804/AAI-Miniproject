@@ -223,7 +223,7 @@ async def run_autonomous_research_endpoint(payload: ResearchExecutionRequest):
         logger.error("Research blocked by LLM configuration: %s", e)
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.error(f"Error in research orchestration: {e}")
+        logger.error(f"Error in research orchestration: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

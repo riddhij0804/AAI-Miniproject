@@ -541,25 +541,20 @@ class ResearchWorkflowOrchestrator:
         )
 
         config = {"configurable": {"thread_id": sess_id}}
-        existing_state = await self.graph.aget_state(config) if self.graph is not None else None
-        if existing_state and existing_state.values and existing_state.values.get("is_completed"):
-            return ResearchWorkflowState.model_validate(existing_state.values)
-        graph_input: Optional[ResearchWorkflowState] = initial_state
-        if existing_state and existing_state.next:
-            graph_input = None
         if self.graph is not None:
+            existing_state = await self.graph.aget_state(config)
+            if existing_state and existing_state.values and existing_state.values.get("is_completed"):
+                return ResearchWorkflowState.model_validate(existing_state.values)
+            graph_input = None if existing_state and existing_state.next else initial_state
             final_output_dict = await self.graph.ainvoke(graph_input, config=config)
         else:
             async with AsyncSqliteSaver.from_conn_string(settings.CHECKPOINT_DATABASE_PATH) as checkpointer:
-                self.graph = self._build_graph(checkpointer)
-                try:
-                    existing_state = await self.graph.aget_state(config)
-                    if existing_state and existing_state.values and existing_state.values.get("is_completed"):
-                        return ResearchWorkflowState.model_validate(existing_state.values)
-                    graph_input = None if existing_state and existing_state.next else initial_state
-                    final_output_dict = await self.graph.ainvoke(graph_input, config=config)
-                finally:
-                    self.graph = None
+                graph = self._build_graph(checkpointer)
+                existing_state = await graph.aget_state(config)
+                if existing_state and existing_state.values and existing_state.values.get("is_completed"):
+                    return ResearchWorkflowState.model_validate(existing_state.values)
+                graph_input = None if existing_state and existing_state.next else initial_state
+                final_output_dict = await graph.ainvoke(graph_input, config=config)
 
         # Reconstruct typed state model from LangGraph output dictionary
         return ResearchWorkflowState.model_validate(final_output_dict)

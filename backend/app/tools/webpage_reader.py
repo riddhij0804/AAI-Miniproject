@@ -123,20 +123,50 @@ class WebpageReaderTool(BaseTool):
             published_date = date_meta["content"].strip()
 
         # Strip non-content and noisy elements
-        for element in soup(["script", "style", "nav", "footer", "header", "noscript", "aside", "form", "svg"]):
-            element.decompose()
+        noisy_selectors = [
+            "script", "style", "nav", "footer", "header", "noscript", "aside", "form", "svg",
+            ".hatnote", ".mw-disambig", ".mw-editsection", ".toc", "#toc", ".navbox",
+            ".vertical-navbox", ".sidebar", ".catlinks", ".printfooter", ".mw-indicators",
+            "#siteNotice", ".mw-jump-link", ".vector-header", ".vector-column-start",
+            ".vector-dropdown", "#mw-navigation", "#p-personal", "#p-navigation", "#p-tb",
+            "#article-nav", "#article-banner", "#article-left", ".menu",
+            "[role='navigation']", "[aria-label*='navigation' i]",
+            ".social-share", ".cookie-banner", ".breadcrumbs", ".breadcrumb"
+        ]
+        for sel in noisy_selectors:
+            for element in soup.select(sel):
+                element.decompose()
 
         # Target main content containers if available
         content_container = (
-            soup.find("article")
+            soup.find("div", {"id": "mw-content-text"})
+            or soup.find("article")
             or soup.find("main")
             or soup.find("div", class_=lambda c: c and any(k in str(c).lower() for k in ["content", "post", "entry"]))
             or soup.body
             or soup
         )
 
-        # Extract clean text
-        lines = (line.strip() for line in content_container.get_text().splitlines())
+        # Extract clean text, filtering noisy lines
+        noise_prefixes = (
+            "from wikipedia, the free encyclopedia",
+            "for other uses, see",
+            "for other people named",
+            "jump to navigation",
+            "jump to search",
+            "table of contents",
+            "stanford encyclopedia of philosophy menu",
+        )
+        lines = []
+        for raw_line in content_container.get_text().splitlines():
+            line_str = raw_line.strip()
+            if not line_str:
+                continue
+            lower_line = line_str.lower()
+            if any(lower_line.startswith(prefix) for prefix in noise_prefixes):
+                continue
+            lines.append(line_str)
+
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         clean_text = "\n".join(chunk for chunk in chunks if chunk)
 

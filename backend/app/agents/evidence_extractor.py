@@ -65,9 +65,21 @@ class EvidenceExtractorAgent:
         ]
         semaphore = asyncio.Semaphore(settings.EXTRACTION_MAX_CONCURRENCY)
 
+        # Determine which chunks (if any) to process with LLM
+        llm_eligible_ids = set()
+        if settings.EXTRACTION_USE_LLM and (settings.OPENAI_API_KEY or settings.GEMINI_API_KEY or settings.GROQ_API_KEY):
+            objective_words = set(re.findall(r"\w+", research_objective.lower())) - {"what", "how", "the", "are", "and", "for", "with", "from"}
+            scored = []
+            for c in eligible_chunks:
+                score = sum(1 for w in objective_words if w in c.text.lower())
+                scored.append((score, c.id))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            llm_eligible_ids = {cid for score, cid in scored[:settings.EXTRACTION_LLM_MAX_CHUNKS] if score > 0}
+
         async def extract_one(chunk: DocumentChunk):
             async with semaphore:
-                return chunk, await self._extract_from_chunk(chunk, research_objective)
+                use_llm = chunk.id in llm_eligible_ids
+                return chunk, await self._extract_from_chunk(chunk, research_objective, use_llm=use_llm)
 
         extracted = await asyncio.gather(*(extract_one(c) for c in eligible_chunks))
         for chunk, raw_items in extracted:
@@ -151,10 +163,11 @@ class EvidenceExtractorAgent:
         # return text that was not actually present in the source.
         return False, ""
 
-    async def _extract_from_chunk(self, chunk: DocumentChunk, research_objective: str) -> List[RawExtractedClaim]:
-        """Dispatch extraction to LLM or deterministic fallback."""
-        # 1. If LLM is configured (OpenAI or Gemini), attempt structured LLM extraction
-        if settings.OPENAI_API_KEY or settings.GEMINI_API_KEY:
+    async def _extract_from_chunk(
+        self, chunk: DocumentChunk, research_objective: str, use_llm: bool = False
+    ) -> List[RawExtractedClaim]:
+        """Dispatch extraction to LLM (if selectively enabled) or deterministic high-precision sentence extractor."""
+        if use_llm and (settings.OPENAI_API_KEY or settings.GEMINI_API_KEY or settings.GROQ_API_KEY):
             try:
                 llm_results = await self._call_llm_extractor(chunk, research_objective)
                 if llm_results:
@@ -162,7 +175,7 @@ class EvidenceExtractorAgent:
             except Exception as e:
                 logger.warning(f"LLM extraction failed on chunk {chunk.id} ({e}), falling back to deterministic extractor")
 
-        # 2. Deterministic high-precision sentence extractor
+        # Deterministic high-precision sentence extractor
         return self._deterministic_extract(chunk, research_objective)
 
     async def _call_llm_extractor(self, chunk: DocumentChunk, research_objective: str) -> List[RawExtractedClaim]:
@@ -186,36 +199,30 @@ class EvidenceExtractorAgent:
             f"Extract any claims and exact evidence quotes relevant to the research objective."
         )
 
-        # Call OpenAI or Gemini if available
-        if settings.OPENAI_API_KEY:
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-            resp = await client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-            )
-            raw_content = resp.choices[0].message.content or "{}"
-            payload = RawExtractionPayload.model_validate_json(raw_content)
-            return payload.items
-
-        return []
+        from backend.app.orchestration.llm import default_llm_client
+        res = await default_llm_client.generate_json(system_instruction, user_prompt)
+        payload = RawExtractionPayload.model_validate(res)
+        return payload.items
 
     def _deterministic_extract(self, chunk: DocumentChunk, research_objective: str) -> List[RawExtractedClaim]:
         """Deterministic extractor that identifies informative, fact-bearing sentences containing quantitative data or key verbs."""
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", chunk.text) if len(s.strip()) > 35]
         objective_words = set(re.findall(r"\w+", research_objective.lower())) - {"what", "how", "the", "are", "and", "for", "with", "from"}
+        noise_filters = (
+            "wikipedia", "encyclopedia", "table of contents", "disambiguation",
+            "menu browse", "all rights reserved", "terms of use", "cookie policy",
+            "privacy policy", "jump to navigation", "retrieved from", "editorial board",
+            "preview author", "citation info", "random entry", "chronological archives",
+        )
 
         candidates: List[RawExtractedClaim] = []
         for s in sentences:
             s_lower = s.lower()
+            if any(term in s_lower for term in noise_filters):
+                continue
             # Check overlap with objective
             overlap = sum(1 for w in objective_words if w in s_lower)
-            has_data = bool(re.search(r"\d+(\.\d+)?%?|\b(increased|decreased|caused|results|demonstrated|found|reported)\b", s_lower))
+            has_data = bool(re.search(r"\d+(\.\d+)?%?|\b(increased|decreased|caused|results|demonstrated|found|reported|developed|published|known|argued|emphasized)\b", s_lower))
 
             if overlap >= 1 or has_data:
                 # Clean claim text (derived summary of sentence)

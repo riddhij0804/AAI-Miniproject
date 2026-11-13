@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import ForceGraph2D from 'react-force-graph-2d';
 import {
   Activity, ArrowUpRight, BookOpen, Check, ChevronRight, CircleAlert,
   ClipboardList, Compass, Database, FileCheck2, FileText, FlaskConical, Globe2, LayoutDashboard,
@@ -157,7 +158,39 @@ function EvidenceView({ result }) {
   return <div className="view-stack"><ViewTitle eyebrow="Evidence ledger" title="Every claim has a trail" description="Inspect how the agent connected claims to verified passages and source URLs." /><div className="ledger-summary"><Stat label="Verified passages" value={result.verified_evidence_count} icon={ShieldCheck} /><Stat label="Supported claims" value={verification?.supported_claims_count || 0} icon={Check} /><Stat label="Contradictions" value={result.contradictions?.length || 0} icon={CircleAlert} /></div><section className="panel ledger">{findings.length === 0 ? <EmptyPanel text="No claim verification details were returned." /> : findings.map((finding) => <article className="ledger-row" key={finding.claim_id}><div className={`verification-icon ${finding.is_supported ? 'good' : 'warn'}`}>{finding.is_supported ? <Check size={16} /> : <CircleAlert size={16} />}</div><div className="ledger-main"><h3>{finding.claim_text}</h3><p>{finding.reasoning}</p><div className="ledger-tags"><span>{finding.is_supported ? `Supported ${percent(finding.support_strength)}` : 'Needs support'}</span><span>{finding.has_valid_provenance ? 'Provenance verified' : 'Provenance gap'}</span>{finding.flags?.map((flag) => <span key={flag}>{flag}</span>)}</div></div></article>)}</section></div>;
 }
 
-function SourcesView({ result }) { return <div className="view-stack"><ViewTitle eyebrow="Source library" title="The material behind the brief" description="Search results are treated as leads. The agent reads the underlying pages before using them as evidence." /><section className="source-grid">{(result.sources || []).map((source) => <article className="source-card" key={source.id}><div className="source-top"><div className="source-favicon"><Globe2 size={16} /></div><span className="source-type">{source.source_type || 'webpage'}</span></div><h3>{source.title}</h3><span className="source-domain">{host(source.url)}</span><p>{source.metadata?.discovery_snippet || 'Source acquired and available for evidence extraction.'}</p><a href={source.url} target="_blank" rel="noreferrer">Open source <ArrowUpRight size={14} /></a></article>)}</section></div>; }
+function SourcesView({ result }) {
+  return (
+    <div className="view-stack">
+      <ViewTitle
+        eyebrow="Source library"
+        title="The material behind the brief"
+        description="Search results are treated as leads. The agent reads the underlying pages before using them as evidence."
+      />
+      <section className="source-grid">
+        {(result.sources || []).map((source) => (
+          <article className="source-card" key={source.id}>
+            <div className="source-card-content">
+              <div className="source-top">
+                <div className="source-favicon">
+                  <Globe2 size={16} />
+                </div>
+                <span className="source-type">{source.source_type || 'webpage'}</span>
+              </div>
+              <h3>{source.title}</h3>
+              <span className="source-domain">{host(source.url)}</span>
+              <p>{source.metadata?.discovery_snippet || 'Source acquired and available for evidence extraction.'}</p>
+            </div>
+            <div className="source-card-footer">
+              <a href={source.url} target="_blank" rel="noreferrer">
+                Open source <ArrowUpRight size={14} />
+              </a>
+            </div>
+          </article>
+        ))}
+      </section>
+    </div>
+  );
+}
 
 function CredibilityView({ result }) { return <div className="view-stack"><ViewTitle eyebrow="Source credibility" title="Transparent source assessment" description="Each source is scored across authority, primary-source quality, recency, evidence quality, peer review, and corroboration." /><section className="source-assessment-list">{(result.credibility_assessments || []).map((assessment) => { const source = result.sources?.find((item) => item.id === assessment.source_id); return <article className="panel assessment-card" key={assessment.id}><div className="assessment-header"><div><span className="eyebrow">{host(source?.url)}</span><h3>{source?.title || assessment.source_id}</h3></div><strong>{percent(assessment.overall_score)}</strong></div><div className="factor-grid">{[['Authority', assessment.authority_score], ['Primary source', assessment.primary_source_score], ['Recency', assessment.recency_score], ['Evidence quality', assessment.evidence_quality_score], ['Peer review', assessment.peer_review_score], ['Corroboration', assessment.corroboration_score]].map(([label, value]) => <div className="factor" key={label}><div><span>{label}</span><b>{value === null ? 'N/A' : percent(value)}</b></div><i><em style={{ width: value === null ? '0%' : `${value * 100}%` }} /></i></div>)}</div><p className="assessment-reasoning">{assessment.reasoning}</p></article>; })}</section></div>; }
 
@@ -167,18 +200,324 @@ function RetrievalView({ result, hits }) { return <div className="view-stack"><V
 
 function GraphView({ graph }) {
   const [selected, setSelected] = useState(null);
-  const [zoom, setZoom] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [dragging, setDragging] = useState(null);
+  const containerRef = useRef(null);
+  const fgRef = useRef(null);
+  const [dimensions, setDimensions] = useState({ width: 800, height: 480 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const updateSize = () => {
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.width > 0) {
+        setDimensions({ width: rect.width - 2, height: Math.max(460, window.innerHeight * 0.52) });
+      }
+    };
+    updateSize();
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
+  }, []);
+
   if (!graph) return <div className="view-stack"><ViewTitle eyebrow="Evidence graph" title="How the evidence connects" description="Typed relationships expose how sources, documents, claims, and evidence support the final brief." /><div className="empty-state"><CircleAlert size={22} /><h2>Graph data unavailable</h2><p>The research completed, but this session did not return graph topology.</p></div></div>;
-  const nodes = graph.nodes || [];
-  const edges = graph.edges || [];
-  const positions = new Map(nodes.map((node, index) => [node.id, { x: 80 + (index % 5) * 190, y: 70 + Math.floor(index / 5) * 110 }]));
-  const color = { source: '#d9664f', document: '#e9b949', claim: '#8067b7', evidence: '#087f78', entity: '#718083' };
-  const selectedNode = nodes.find((node) => node.id === selected);
-  const beginDrag = (event) => setDragging({ x: event.clientX, y: event.clientY, ox: offset.x, oy: offset.y });
-  const moveDrag = (event) => { if (dragging) setOffset({ x: dragging.ox + event.clientX - dragging.x, y: dragging.oy + event.clientY - dragging.y }); };
-  return <div className="view-stack"><ViewTitle eyebrow="Evidence graph" title="How the evidence connects" description="Click a node to inspect provenance. Drag to pan and use the controls or wheel to zoom." /><div className="ledger-summary"><Stat label="Nodes" value={nodes.length} icon={Network} /><Stat label="Relationships" value={edges.length} icon={Share2} /><Stat label="Evidence links" value={edges.filter((edge) => edge.relation === 'supports').length} icon={ShieldCheck} /></div><section className="panel graph-panel"><div className="graph-toolbar"><button onClick={() => setZoom((value) => Math.min(2, value + .15))}>+</button><button onClick={() => setZoom((value) => Math.max(.5, value - .15))}>−</button><button onClick={() => { setZoom(1); setOffset({ x: 0, y: 0 }); }}>Reset</button><span>{Math.round(zoom * 100)}%</span></div><svg className="evidence-graph" viewBox="0 0 900 420" role="img" aria-label="Interactive evidence provenance graph" onWheel={(event) => { event.preventDefault(); setZoom((value) => Math.max(.5, Math.min(2, value + (event.deltaY < 0 ? .08 : -.08)))); }} onPointerDown={beginDrag} onPointerMove={moveDrag} onPointerUp={() => setDragging(null)} onPointerLeave={() => setDragging(null)}><g transform={`translate(${offset.x} ${offset.y}) scale(${zoom})`}>{edges.map((edge) => { const source = positions.get(edge.source); const target = positions.get(edge.target); return source && target ? <line key={edge.id} x1={source.x} y1={source.y} x2={target.x} y2={target.y} stroke={edge.relation === 'supports' ? '#087f78' : '#c7c3b9'} strokeWidth="1.5" /> : null; })}{nodes.map((node) => { const position = positions.get(node.id); return <g key={node.id} className="graph-node" transform={`translate(${position.x} ${position.y})`} onClick={(event) => { event.stopPropagation(); setSelected(node.id); }}><circle r="19" fill={color[node.type] || color.entity} stroke={selected === node.id ? '#1d292b' : '#fffdf8'} strokeWidth={selected === node.id ? 4 : 2} /><text y="36" textAnchor="middle">{node.label.slice(0, 22)}{node.label.length > 22 ? '…' : ''}</text><text y="49" textAnchor="middle" className="graph-node-type">{node.type}</text></g>; })}</g></svg>{selectedNode && <div className="graph-inspector"><div><span className="eyebrow">{selectedNode.type}</span><h3>{selectedNode.label}</h3></div><button className="icon-button" onClick={() => setSelected(null)} aria-label="Close provenance details"><X size={15} /></button><pre>{JSON.stringify(selectedNode.properties || {}, null, 2)}</pre></div>}</section></div>;
+
+  const rawNodes = graph.nodes || [];
+  const rawEdges = graph.edges || [];
+
+  const graphData = useMemo(() => {
+    const nodeMap = new Map(rawNodes.map((n) => [n.id, { ...n }]));
+    const nodes = Array.from(nodeMap.values());
+    const links = rawEdges
+      .filter((e) => nodeMap.has(e.source) && nodeMap.has(e.target))
+      .map((e) => ({
+        id: e.id || `${e.source}-${e.target}`,
+        source: e.source,
+        target: e.target,
+        relation: e.relation || 'related_to',
+        weight: e.weight || 1.0,
+      }));
+    return { nodes, links };
+  }, [rawNodes, rawEdges]);
+
+  const color = {
+    source: '#d9664f',
+    document: '#e9b949',
+    claim: '#8067b7',
+    evidence: '#087f78',
+    entity: '#718083',
+  };
+
+  const selectedNode = rawNodes.find((n) => n.id === selected);
+
+  const handleNodeClick = useCallback((node) => {
+    setSelected(node.id);
+    if (fgRef.current && node.x !== undefined && node.y !== undefined) {
+      fgRef.current.centerAt(node.x, node.y, 500);
+      fgRef.current.zoom(2.2, 500);
+    }
+  }, []);
+
+  const handleZoomIn = () => {
+    if (fgRef.current) fgRef.current.zoom(fgRef.current.zoom() * 1.3, 300);
+  };
+  const handleZoomOut = () => {
+    if (fgRef.current) fgRef.current.zoom(fgRef.current.zoom() / 1.3, 300);
+  };
+  const handleReset = () => {
+    if (fgRef.current) {
+      fgRef.current.zoomToFit(500, 40);
+      fgRef.current.d3ReheatSimulation();
+    }
+  };
+
+  return (
+    <div className="view-stack">
+      <ViewTitle
+        eyebrow="Evidence graph"
+        title="Interactive knowledge & provenance graph"
+        description="Fluid force-directed physics graph. Drag nodes to untangle, zoom to inspect, and click any node to trace its provenance."
+      />
+      <div className="ledger-summary">
+        <Stat label="Nodes" value={rawNodes.length} icon={Network} />
+        <Stat label="Relationships" value={rawEdges.length} icon={Share2} />
+        <Stat label="Evidence links" value={rawEdges.filter((e) => e.relation === 'supports').length} icon={ShieldCheck} />
+      </div>
+
+      <section className="panel graph-panel" ref={containerRef}>
+        <div className="graph-toolbar">
+          <button type="button" onClick={handleZoomIn} title="Zoom In">+</button>
+          <button type="button" onClick={handleZoomOut} title="Zoom Out">−</button>
+          <button type="button" onClick={handleReset} title="Fit to Screen">Fit view</button>
+          <div className="graph-legend">
+            {Object.entries(color).map(([type, c]) => (
+              <span key={type} className="legend-item">
+                <i style={{ background: c }} /> {type}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="force-graph-container" style={{ width: dimensions.width, height: dimensions.height }}>
+          <ForceGraph2D
+            ref={fgRef}
+            width={dimensions.width}
+            height={dimensions.height}
+            graphData={graphData}
+            backgroundColor="#faf8f2"
+            nodeRelSize={6}
+            nodeVal={(node) => (node.type === 'claim' ? 8 : node.type === 'source' ? 9 : node.type === 'evidence' ? 6 : 5)}
+            nodeColor={(node) => color[node.type] || color.entity}
+            nodeLabel={(node) => `${node.type.toUpperCase()}: ${node.label}`}
+            nodeCanvasObject={(node, ctx, globalScale) => {
+              const r = node.type === 'claim' ? 7 : node.type === 'source' ? 8 : 5;
+              const isSelected = selected === node.id;
+              const nodeColor = color[node.type] || color.entity;
+
+              // Selection ring
+              if (isSelected) {
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, r + 4, 0, 2 * Math.PI, false);
+                ctx.strokeStyle = '#1d292b';
+                ctx.lineWidth = 2.5;
+                ctx.stroke();
+              }
+
+              // Node circle
+              ctx.beginPath();
+              ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false);
+              ctx.fillStyle = nodeColor;
+              ctx.fill();
+              ctx.strokeStyle = '#ffffff';
+              ctx.lineWidth = 1.2;
+              ctx.stroke();
+
+              // Clean text label when zoomed in or selected
+              if (globalScale > 1.05 || isSelected) {
+                const label = node.label.length > 25 ? node.label.slice(0, 22) + '…' : node.label;
+                const fontSize = Math.max(10 / globalScale, 3.2);
+                ctx.font = `${isSelected ? 'bold ' : ''}${fontSize}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+
+                const textWidth = ctx.measureText(label).width;
+                const bPad = 2 / globalScale;
+                ctx.fillStyle = 'rgba(250, 248, 242, 0.88)';
+                ctx.fillRect(
+                  node.x - textWidth / 2 - bPad,
+                  node.y + r + 2 / globalScale,
+                  textWidth + bPad * 2,
+                  fontSize + bPad * 2
+                );
+
+                ctx.fillStyle = '#1d292b';
+                ctx.fillText(label, node.x, node.y + r + 3 / globalScale);
+              }
+            }}
+            nodePointerAreaPaint={(node, color, ctx) => {
+              const r = (node.type === 'claim' ? 7 : node.type === 'source' ? 8 : 5) + 3;
+              ctx.fillStyle = color;
+              ctx.beginPath();
+              ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false);
+              ctx.fill();
+            }}
+            linkDirectionalArrowLength={5}
+            linkDirectionalArrowRelPos={1}
+            linkDirectionalParticles={(link) => (link.relation === 'supports' ? 2 : 0)}
+            linkDirectionalParticleSpeed={0.005}
+            linkDirectionalParticleWidth={2}
+            linkDirectionalParticleColor={() => '#087f78'}
+            linkColor={(link) =>
+              link.relation === 'supports'
+                ? '#087f78'
+                : link.relation === 'contradicts'
+                ? '#d9664f'
+                : '#b5b0a4'
+            }
+            linkWidth={(link) => (link.relation === 'supports' ? 1.8 : 1.1)}
+            linkLabel={(link) => `${link.relation}`}
+            onNodeClick={handleNodeClick}
+            onBackgroundClick={() => setSelected(null)}
+            cooldownTicks={120}
+            warmupTicks={25}
+          />
+        </div>
+
+        {selectedNode && (
+          <GraphInspector node={selectedNode} onClose={() => setSelected(null)} />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function GraphInspector({ node, onClose }) {
+  if (!node) return null;
+  const props = node.properties || {};
+
+  return (
+    <div className="graph-inspector">
+      <div className="inspector-head">
+        <div>
+          <span className={`inspector-type-pill type-${node.type}`}>{node.type}</span>
+          <h3>{node.label}</h3>
+        </div>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={onClose}
+          aria-label="Close provenance details"
+        >
+          <X size={15} />
+        </button>
+      </div>
+
+      <div className="inspector-body">
+        {node.type === 'evidence' && (
+          <div className="inspector-card">
+            <blockquote className="inspector-quote">
+              “{props.text || node.label}”
+            </blockquote>
+            <div className="inspector-badges">
+              {props.supports !== undefined && (
+                <span className={`inspector-badge ${props.supports ? 'badge-good' : 'badge-warn'}`}>
+                  {props.supports ? '✓ Supports assertion' : '✗ Contradicts'}
+                </span>
+              )}
+              {props.confidence !== undefined && (
+                <span className="inspector-badge badge-neutral">
+                  Confidence {Math.round(props.confidence * 100)}%
+                </span>
+              )}
+              {props.location && (
+                <span className="inspector-badge badge-neutral">
+                  Section: {props.location}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {node.type === 'claim' && (
+          <div className="inspector-card">
+            <p className="inspector-statement">
+              {props.full_text || props.statement || node.label}
+            </p>
+            <div className="inspector-badges">
+              {props.status && (
+                <span className="inspector-badge badge-info">
+                  Status: {props.status}
+                </span>
+              )}
+              {props.confidence !== undefined && (
+                <span className="inspector-badge badge-neutral">
+                  Confidence {Math.round(props.confidence * 100)}%
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {node.type === 'source' && (
+          <div className="inspector-card">
+            {props.url && (
+              <a
+                href={props.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inspector-link"
+              >
+                <span>{props.url}</span>
+                <ArrowUpRight size={13} />
+              </a>
+            )}
+            <div className="inspector-badges">
+              {props.credibility_score !== undefined && (
+                <span className="inspector-badge badge-good">
+                  Credibility {Math.round(props.credibility_score * 100)}%
+                </span>
+              )}
+              {props.publisher && (
+                <span className="inspector-badge badge-neutral">
+                  Publisher: {props.publisher}
+                </span>
+              )}
+              {props.source_type && (
+                <span className="inspector-badge badge-neutral">
+                  Type: {props.source_type}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {node.type === 'document' && (
+          <div className="inspector-card">
+            <div className="inspector-badges">
+              {props.type && (
+                <span className="inspector-badge badge-neutral">
+                  Format: {String(props.type).toUpperCase()}
+                </span>
+              )}
+              {props.created_at && (
+                <span className="inspector-badge badge-neutral">
+                  Ingested: {new Date(props.created_at).toLocaleDateString()}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {node.type !== 'evidence' && node.type !== 'claim' && node.type !== 'source' && node.type !== 'document' && (
+          <div className="inspector-meta-list">
+            {Object.entries(props).map(([key, val]) => (
+              <div key={key} className="meta-row">
+                <span>{key.replace(/_/g, ' ')}</span>
+                <strong>{typeof val === 'object' ? JSON.stringify(val) : String(val)}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function EvaluationView({ report }) { return <div className="view-stack"><ViewTitle eyebrow="Evaluation benchmark" title="Pipeline quality checks" description="The benchmark covers retrieval, evidence grounding, claim support, and security rejection across multiple domains." />{!report ? <div className="empty-state"><LoaderCircle className="spinner" size={22} /><h2>Evaluation is still loading</h2><p>The benchmark runs after the agent completes. Refresh this view in a moment.</p></div> : <><div className="stat-strip"><Stat label="Recall @3" value={percent(report.mean_recall_at_3)} icon={Search} /><Stat label="Precision @3" value={percent(report.mean_precision_at_3)} icon={FileCheck2} /><Stat label="Mean MRR" value={(report.mean_mrr || 0).toFixed(2)} icon={Activity} /><Stat label="Security rejection" value={percent(report.overall_security_rejection_rate)} icon={ShieldCheck} /></div><section className="panel evaluation-list">{report.case_results?.map((item) => <article className="evaluation-row" key={item.case_id}><div><span className="eyebrow">{item.domain}</span><h3>{item.query}</h3></div><span className="task-status completed">passed</span><div className="evaluation-metrics"><span>Recall {percent(item.retrieval_metrics.recall_at_3)}</span><span>Precision {percent(item.retrieval_metrics.precision_at_3)}</span><span>MRR {(item.retrieval_metrics.mrr || 0).toFixed(2)}</span><span>Quotes {item.evidence_metrics.verified_quotes_count}</span></div></article>)}</section></>}</div>; }

@@ -17,6 +17,31 @@ class LLMUnavailableError(RuntimeError):
     """Raised when no configured provider can complete a structured request."""
 
 
+class RateLimiter:
+    """Sliding-window rate limiter ensuring requests per minute (RPM) do not exceed provider ceilings."""
+
+    def __init__(self, max_rpm: int = 12):
+        self.max_rpm = max_rpm
+        self._lock = asyncio.Lock()
+        self._timestamps: list[float] = []
+
+    async def acquire(self):
+        if self.max_rpm <= 0:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            self._timestamps = [t for t in self._timestamps if now - t < 60.0]
+            if len(self._timestamps) >= self.max_rpm:
+                oldest = self._timestamps[0]
+                sleep_needed = 60.0 - (now - oldest) + 0.25
+                if sleep_needed > 0:
+                    logger.info("Throttling LLM call to respect %d RPM limit: sleeping %.2fs", self.max_rpm, sleep_needed)
+                    await asyncio.sleep(sleep_needed)
+                    now = time.monotonic()
+                    self._timestamps = [t for t in self._timestamps if now - t < 60.0]
+            self._timestamps.append(now)
+
+
 class LLMClient:
     """Dispatch structured JSON requests across configured providers."""
 
@@ -34,6 +59,7 @@ class LLMClient:
         self.openai_model = settings.OPENAI_MODEL
         self.gemini_model = settings.GEMINI_MODEL
         self.groq_model = settings.GROQ_MODEL
+        self.rate_limiter = RateLimiter(max_rpm=settings.LLM_MAX_RPM)
         self.metrics = {
             "calls": 0,
             "retries": 0,
@@ -76,6 +102,7 @@ class LLMClient:
         for provider in providers:
             for attempt in range(settings.LLM_MAX_RETRIES + 1):
                 self.metrics["calls"] += 1
+                await self.rate_limiter.acquire()
                 started = time.perf_counter()
                 try:
                     if provider == "gemini":
@@ -106,10 +133,21 @@ class LLMClient:
                             exc,
                         )
                         break
+                    backoff_delay = settings.LLM_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                        retry_after = exc.response.headers.get("Retry-After")
+                        if retry_after and retry_after.strip().isdigit():
+                            backoff_delay = float(retry_after.strip()) + 0.5
+                        else:
+                            backoff_delay = max(6.0, backoff_delay * 8)
+                        logger.warning(
+                            "Rate limit (429) hit for provider=%s. Backing off for %.2fs before retry %d",
+                            provider,
+                            backoff_delay,
+                            attempt + 1,
+                        )
                     self.metrics["retries"] += 1
-                    await asyncio.sleep(
-                        settings.LLM_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
-                    )
+                    await asyncio.sleep(backoff_delay)
         raise LLMUnavailableError("All configured LLM providers failed: " + "; ".join(errors))
 
     @staticmethod
