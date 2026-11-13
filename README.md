@@ -1,8 +1,15 @@
-# Research Intelligence & Evidence Subsystem
+# Autonomous Multi-Agent Research & Evidence Engine
 
 > **Autonomous Research & Intelligence Agent** — General-Purpose, Domain-Independent Research Engine Subsystem.
 
-This repository implements the **Research Intelligence & Evidence** subsystem for the Autonomous Multi-Agent Research Engine. It is completely domain-independent (operating across medicine, energy, AI security, public policy, etc.) and provides clean, decoupled service interfaces for integration with the teammate's LangGraph orchestration layer.
+This repository implements a domain-independent multi-agent research engine for medicine,
+energy, AI security, public policy, and other research topics. It discovers sources,
+fetches and chunks documents, extracts verbatim evidence, verifies claims, performs
+hybrid retrieval, builds an evidence graph, and produces citation-audited reports.
+
+The backend is a FastAPI/LangGraph application and the frontend is a Vite/React
+dashboard. Four research depths are supported by the existing UI: Quick, Balanced,
+Thorough, and Deep.
 
 ## Running the application
 
@@ -12,8 +19,27 @@ Research requests fail with HTTP 503 when no provider is configured or all
 configured providers fail; deterministic extraction is not used as a silent
 substitute for a missing LLM.
 
-Start the backend with `uvicorn backend.app.main:app --reload` and the frontend
-with `npm run dev` from `frontend/`. The default Qdrant local store is
+Windows:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload
+```
+
+In a second terminal:
+
+```powershell
+Set-Location frontend
+npm install
+npm run dev
+```
+
+The backend is available at `http://localhost:8000`, API docs at
+`http://localhost:8000/docs`, and the frontend at `http://localhost:5173`.
+
+The default Qdrant local store is
 `./qdrant_data`, and LangGraph checkpoints are stored in
 `./research_checkpoints.db`. Both are reopened automatically after a backend
 restart using the same research session/thread ID.
@@ -25,12 +51,19 @@ development embeddings.
 
 ## Validation
 
-Run `pytest -q` for the backend suite and `npm run build` in `frontend/` for the
-production bundle. Tests use explicit local LLM stubs where network credentials
-are not appropriate; provider failover, malformed responses, Qdrant persistence,
-hybrid retrieval, citation grounding, security, and orchestration recovery are
-covered separately. Live Gemini/Groq success requires valid credentials and is
-reported separately from these deterministic tests.
+Run the backend suite with the repository virtual environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+Set-Location frontend
+npm run build
+```
+
+The tests use local LLM stubs where network credentials are not appropriate.
+Provider failover, bounded retries, Qdrant persistence, hybrid retrieval,
+incremental indexing, citation grounding, prompt-injection protection, audit
+logging, and orchestration recovery are covered. Live Gemini/Groq success
+requires valid credentials and is reported separately from deterministic tests.
 
 ---
 
@@ -70,17 +103,24 @@ Claims + Grounded Evidence
 
 1. **Domain-Independent**: Zero hard-coded assumptions of companies, market competitors, or financial ratios. Evaluated identically on microbiology, renewable energy, and cybersecurity.
 2. **Search Snippets ≠ Evidence**: Discovery search snippets are strictly treated as preliminary triage metadata. Evidence must be extracted from the actual fetched document body.
-3. **Zero Fabricated Citations**: The extractor cryptographically and lexically verifies that every extracted evidence quote is an exact or high-fidelity substring of the source chunk. Hallucinations are rejected.
+3. **Zero Fabricated Citations**: The extractor lexically verifies that every extracted evidence quote is an exact substring of the source chunk. Hallucinated quotes are rejected.
 4. **Untrusted Data Isolation**: All retrieved web and PDF text is treated as untrusted external data. Control tokens (`<|im_start|>`, `[INST]`) are neutralized, suspicious prompt injections are detected and isolated into passive XML data blocks.
 5. **SSRF Protection**: Private IP ranges (RFC 1918), localhost/loopback (`127.0.0.1`, `::1`), cloud metadata endpoints (`169.254.169.254`), and dangerous URI schemes (`file://`, `gopher://`) are strictly blocked.
 6. **Complete Traceability**: Every chunk, evidence excerpt, and claim maintains an unbroken provenance link:
    $$\text{Evidence} \rightarrow \text{Chunk} \rightarrow \text{Document} \rightarrow \text{Source} \rightarrow \text{URL}$$
+7. **Explicit Security Outcomes**: User and retrieved text are classified as `SAFE`,
+   `SUSPICIOUS`, `BLOCKED`, or `REVIEW`; blocked user requests do not reach tools or
+   LLM providers.
+8. **Structured Auditability**: Queries, sessions, sources, retrieval scores,
+   retries, errors, security decisions, and execution outcomes are recorded and
+   exportable as JSON or CSV.
 
 ---
 
 ## Integration Contract (For Teammate's LangGraph Layer)
 
-The subsystem provides clean, decoupled async functions from `backend.app.services.research_service`:
+The research service provides clean, decoupled async functions from
+`backend.app.services.research_service`:
 
 ```python
 from backend.app.services.research_service import (
@@ -180,8 +220,8 @@ context = get_research_context(session_id="session-01")
 │       │   ├── benchmark_data.py     # Multi-domain benchmark test cases
 │       │   └── evaluator.py          # Benchmark runner & security evaluator
 │       └── services/
-│           └── research_service.py   # Integration interface for teammate's LangGraph
-├── tests/                            # 28 Comprehensive pytest test suites
+│           └── research_service.py   # Discovery, extraction, retrieval, and graph service
+├── tests/                            # Backend regression and integration tests
 ├── requirements.txt
 ├── pytest.ini
 └── README.md
@@ -189,13 +229,14 @@ context = get_research_context(session_id="session-01")
 
 ---
 
-## Running the Subsystem
+## Running and evaluating the application
 
 ### 1. Run the Test Suite
 ```bash
-pytest tests/ -v
+.\.venv\Scripts\python.exe -m pytest -q
 ```
-All 49 tests run with zero external network dependencies (in-memory SQLite, in-memory Qdrant, deterministic feature embeddings, and mocked tool execution).
+The suite runs without external network dependencies using in-memory stores,
+deterministic embeddings, and mocked tool execution.
 
 ### 2. Run the FastAPI Service
 ```bash
@@ -212,7 +253,7 @@ Access the interactive Autonomous Research Console at `http://localhost:5173`.
 
 ### 4. Run the Automated Evaluation Benchmark
 ```bash
-python -c "
+.\.venv\Scripts\python.exe -c "
 import asyncio
 from backend.app.evaluation.evaluator import default_evaluator
 
@@ -225,10 +266,25 @@ async def main():
     print(f'Mean Evidence Coverage: {report.mean_evidence_coverage}')
     print(f'Mean Claim Support Rate: {report.mean_claim_support_rate}')
     print(f'Security Rejection Rate: {report.overall_security_rejection_rate}')
+    print(f'Average Similarity: {report.average_similarity}')
+    print(f'Successful Queries: {report.successful_queries}')
+    print(f'Failed Queries: {report.failed_queries}')
 
 asyncio.run(main())
 "
 ```
+
+### 5. Export audit events
+
+After running the backend, export structured audit events with:
+
+```text
+GET /api/audit/export?format=json
+GET /api/audit/export?format=csv&session_id=<session-id>
+```
+
+Audit data is kept in memory for the running process; export it before stopping
+the backend if it is needed for an external report.
 
 ---
 

@@ -87,6 +87,9 @@ class ReportWriterAgent:
                             exact_quote=ev.text,
                             location=ev.location,
                             credibility_score=src.credibility_score if src else None,
+                            document_id=ev.document_id,
+                            chunk_id=ev.chunk_id,
+                            page_number=ev.metadata.get("page_number"),
                         )
                     )
                     if len(references) >= settings.MAX_REPORT_CITATIONS:

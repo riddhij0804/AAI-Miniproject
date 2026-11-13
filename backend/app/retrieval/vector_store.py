@@ -1,7 +1,7 @@
 """Vector store implementation using Qdrant with full provenance preservation."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
@@ -27,6 +27,9 @@ class VectorSearchResult(BaseModel):
 class QdrantVectorStore:
     """Manages chunk vector embeddings and similarity queries in Qdrant."""
 
+    _shared_clients: ClassVar[Dict[Tuple[str, str], QdrantClient]] = {}
+    _shared_refs: ClassVar[Dict[Tuple[str, str], int]] = {}
+
     def __init__(
         self,
         location: str = settings.QDRANT_LOCATION,
@@ -39,11 +42,30 @@ class QdrantVectorStore:
         self.vector_size = vector_size
         self.api_key = api_key
         self._client: Optional[QdrantClient] = None
+        self._client_key = (self.location, self.collection_name)
         self._init_client()
 
     def _init_client(self) -> None:
         """Initialize Qdrant client and ensure collection exists."""
         try:
+            shared = self._shared_clients.get(self._client_key)
+            if shared is not None:
+                # A caller may have closed the exposed client directly. Probe
+                # before reusing it so a stale shared entry is discarded.
+                try:
+                    shared.get_collections()
+                except Exception:
+                    self._shared_clients.pop(self._client_key, None)
+                    self._shared_refs.pop(self._client_key, None)
+                else:
+                    self._client = shared
+                    self._shared_refs[self._client_key] = self._shared_refs.get(self._client_key, 0) + 1
+                    logger.info(
+                        "Reusing Qdrant client location=%s collection=%s",
+                        self.location,
+                        self.collection_name,
+                    )
+                    return
             if self.location == ":memory:":
                 self._client = QdrantClient(location=":memory:")
             elif self.location.startswith("http://") or self.location.startswith("https://"):
@@ -52,9 +74,16 @@ class QdrantVectorStore:
                 self._client = QdrantClient(path=self.location)
 
             self._ensure_collection()
+            self._shared_clients[self._client_key] = self._client
+            self._shared_refs[self._client_key] = self._shared_refs.get(self._client_key, 0) + 1
             logger.info(f"QdrantVectorStore initialized at '{self.location}', collection: '{self.collection_name}'")
         except Exception as e:
-            logger.error(f"Failed to initialize QdrantVectorStore: {e}")
+            logger.error(
+                "Failed to initialize QdrantVectorStore location=%s collection=%s: %s",
+                self.location,
+                self.collection_name,
+                e,
+            )
             self._client = None
 
     def _ensure_collection(self) -> None:
@@ -133,8 +162,9 @@ class QdrantVectorStore:
     ) -> List[VectorSearchResult]:
         """Search nearest chunk embeddings by cosine similarity."""
         if not self._client:
-            logger.warning("Qdrant client unavailable during search. Returning empty results.")
-            return []
+            raise RuntimeError(
+                f"Qdrant client unavailable for '{self.location}/{self.collection_name}'"
+            )
 
         # Build filter if requested
         query_filter = None
@@ -192,7 +222,20 @@ class QdrantVectorStore:
             return results
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
-            return []
+            raise RuntimeError(f"Vector search failed: {e}") from e
+
+    def close(self) -> None:
+        """Release this store's reference without closing a client still in use."""
+        if not self._client:
+            return
+        refs = self._shared_refs.get(self._client_key, 1) - 1
+        if refs <= 0:
+            self._shared_refs.pop(self._client_key, None)
+            self._shared_clients.pop(self._client_key, None)
+            self._client.close()
+        else:
+            self._shared_refs[self._client_key] = refs
+        self._client = None
 
     def count(self) -> int:
         """Count total vectors in collection."""

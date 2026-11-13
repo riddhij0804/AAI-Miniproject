@@ -3,6 +3,7 @@
 import ipaddress
 import re
 import socket
+from enum import Enum
 from urllib.parse import urlparse
 from typing import Optional, Tuple
 from backend.app.config import settings
@@ -11,6 +12,13 @@ from backend.app.config import settings
 class SecurityError(Exception):
     """Raised when an operation violates security constraints."""
     pass
+
+
+class SecurityOutcome(str, Enum):
+    SAFE = "SAFE"
+    SUSPICIOUS = "SUSPICIOUS"
+    BLOCKED = "BLOCKED"
+    REVIEW = "REVIEW"
 
 
 class URLValidator:
@@ -87,6 +95,12 @@ class PromptInjectionGuard:
         r"(?i)<\|im_end\|>",
         r"(?i)\[INST\].*\[/INST\]",
     ]
+    BLOCKING_PATTERNS = (
+        r"(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts?|directives?)",
+        r"(?i)(reveal|show|print|leak)\s+(your\s+)?(system\s+prompt|hidden\s+instructions|api[_\s]?key|secret)",
+        r"(?i)(execute|call|invoke)\s+(the\s+)?(tool|function|command)",
+        r"(?i)<\|im_start\|>|<\|im_end\|>|\[INST\].*\[/INST\]",
+    )
 
     @classmethod
     def contains_injection_pattern(cls, text: str) -> Tuple[bool, Optional[str]]:
@@ -96,6 +110,31 @@ class PromptInjectionGuard:
             if match:
                 return True, match.group(0)
         return False, None
+
+    @classmethod
+    def assess_text(cls, text: str, *, user_input: bool = False) -> dict:
+        """Return an explicit security decision without treating data as instructions."""
+        value = text or ""
+        for pattern in cls.BLOCKING_PATTERNS:
+            match = re.search(pattern, value)
+            if match:
+                return {
+                    "outcome": SecurityOutcome.BLOCKED.value if user_input else SecurityOutcome.REVIEW.value,
+                    "reason": "Instruction override, prompt disclosure, or tool execution request detected.",
+                    "matched_pattern": match.group(0),
+                }
+        suspicious, pattern = cls.contains_injection_pattern(value)
+        if suspicious:
+            return {
+                "outcome": SecurityOutcome.SUSPICIOUS.value if user_input else SecurityOutcome.REVIEW.value,
+                "reason": "Content resembles a prompt-injection attempt and is isolated as untrusted data.",
+                "matched_pattern": pattern,
+            }
+        return {
+            "outcome": SecurityOutcome.SAFE.value,
+            "reason": "No known prompt-injection indicators detected.",
+            "matched_pattern": None,
+        }
 
     @classmethod
     def sanitize_untrusted_content(cls, text: str) -> str:

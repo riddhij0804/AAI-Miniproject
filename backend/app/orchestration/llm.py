@@ -2,6 +2,8 @@
 
 import json
 import logging
+import time
+import asyncio
 from typing import Any, Dict, Optional
 
 import httpx
@@ -32,6 +34,11 @@ class LLMClient:
         self.openai_model = settings.OPENAI_MODEL
         self.gemini_model = settings.GEMINI_MODEL
         self.groq_model = settings.GROQ_MODEL
+        self.metrics = {
+            "calls": 0,
+            "retries": 0,
+            "provider_failures": 0,
+        }
 
     @property
     def has_active_key(self) -> bool:
@@ -68,6 +75,8 @@ class LLMClient:
         errors = []
         for provider in providers:
             for attempt in range(settings.LLM_MAX_RETRIES + 1):
+                self.metrics["calls"] += 1
+                started = time.perf_counter()
                 try:
                     if provider == "gemini":
                         result = await self._call_gemini_json(system_prompt, user_prompt)
@@ -77,10 +86,38 @@ class LLMClient:
                         result = await self._call_openai_json(system_prompt, user_prompt)
                     if not isinstance(result, dict):
                         raise ValueError("Provider returned a non-object JSON response")
+                    logger.info(
+                        "llm_call_complete provider=%s attempt=%d duration_ms=%.2f",
+                        provider,
+                        attempt + 1,
+                        (time.perf_counter() - started) * 1000,
+                    )
                     return result
                 except (httpx.HTTPError, ValueError, KeyError, json.JSONDecodeError) as exc:
                     errors.append(f"{provider} attempt {attempt + 1}: {exc}")
+                    self.metrics["provider_failures"] += 1
+                    retryable = self._is_retryable(exc)
+                    if not retryable or attempt >= settings.LLM_MAX_RETRIES:
+                        logger.warning(
+                            "llm_call_failed provider=%s attempt=%d retryable=%s error=%s",
+                            provider,
+                            attempt + 1,
+                            retryable,
+                            exc,
+                        )
+                        break
+                    self.metrics["retries"] += 1
+                    await asyncio.sleep(
+                        settings.LLM_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+                    )
         raise LLMUnavailableError("All configured LLM providers failed: " + "; ".join(errors))
+
+    @staticmethod
+    def _is_retryable(exc: Exception) -> bool:
+        """Retry transport failures and transient provider responses, not bad requests."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code == 429 or exc.response.status_code >= 500
+        return isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
 
     async def _call_gemini_json(self, system_prompt: str, user_prompt: str) -> Optional[Dict[str, Any]]:
         url = (

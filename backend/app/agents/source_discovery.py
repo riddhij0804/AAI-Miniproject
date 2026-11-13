@@ -2,6 +2,7 @@
 
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from backend.app.schemas.common import SourceType, generate_uuid
 from backend.app.schemas.source import (
@@ -13,6 +14,13 @@ from backend.app.schemas.source import (
 from backend.app.tools.registry import ToolRegistry, default_registry
 
 logger = logging.getLogger(__name__)
+
+
+def canonicalize_url(url: str) -> str:
+    """Normalize harmless URL differences while retaining path and query semantics."""
+    parsed = urlsplit(url.strip())
+    path = parsed.path.rstrip("/") or "/"
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.query, ""))
 
 
 class SourceDiscoveryAgent:
@@ -53,11 +61,18 @@ class SourceDiscoveryAgent:
         provider = data.get("provider_used", "unknown")
 
         sources: List[SourceDiscoveryItem] = []
+        seen_urls = set()
         for s in raw_sources:
+            url = s.get("url", "")
+            canonical_url = canonicalize_url(url) if url else ""
+            if canonical_url and canonical_url in seen_urls:
+                continue
+            if canonical_url:
+                seen_urls.add(canonical_url)
             item = SourceDiscoveryItem(
                 source_id=s.get("source_id", generate_uuid()),
                 title=s.get("title", "Untitled Source"),
-                url=s.get("url", ""),
+                url=url,
                 publisher=s.get("publisher"),
                 source_type=s.get("source_type", SourceType.WEBPAGE),
                 published_at=s.get("published_at"),

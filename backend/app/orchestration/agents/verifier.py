@@ -142,6 +142,12 @@ class EvidenceVerificationAgent:
                     source_urls=list(set(source_urls)),
                     flags=support_flags,
                     reasoning=reasoning,
+                    grounding_status="PASS" if is_supported else ("REVIEW" if associated_ev else "FAIL"),
+                    confidence_level=(
+                        "HIGH" if support_score >= 0.8 and provenance_valid
+                        else "MEDIUM" if support_score >= 0.5 and provenance_valid
+                        else "LOW"
+                    ),
                 )
             )
 

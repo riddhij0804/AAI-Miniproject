@@ -71,6 +71,8 @@ class ClaimVerificationFinding(BaseSchema):
     source_urls: List[str] = Field(default_factory=list)
     flags: List[str] = Field(default_factory=list)  # "weakly_supported", "unsupported", "outdated", "no_provenance"
     reasoning: str
+    grounding_status: str = "REVIEW"
+    confidence_level: str = "LOW"
 
 
 class EvidenceVerificationReport(BaseSchema):
@@ -120,6 +122,9 @@ class ReportCitation(BaseSchema):
     exact_quote: str
     location: str
     credibility_score: Optional[float] = None
+    document_id: Optional[str] = None
+    chunk_id: Optional[str] = None
+    page_number: Optional[int] = None
 
 
 class FinalResearchReport(BaseSchema):
@@ -279,6 +284,7 @@ class ResearchWorkflowState(BaseModel):
     current_stage: str = "query_understanding"
     errors: Annotated[List[str], merge_errors] = Field(default_factory=list)
     audit_logs: Annotated[List[Dict[str, Any]], merge_audit_logs] = Field(default_factory=list)
+    security_decision: Optional[Dict[str, Any]] = None
 
     model_config = {
         "arbitrary_types_allowed": True

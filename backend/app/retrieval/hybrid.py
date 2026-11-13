@@ -2,10 +2,13 @@
 
 import logging
 import re
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from rank_bm25 import BM25Okapi
 
+from backend.app.config import settings
 from backend.app.retrieval.embeddings import BaseEmbeddingService, default_embedding_service
 from backend.app.retrieval.vector_store import QdrantVectorStore, VectorSearchResult, default_vector_store
 from backend.app.schemas.document import DocumentChunk
@@ -47,22 +50,46 @@ class HybridRetriever:
         self._bm25_corpus: List[DocumentChunk] = []
         self._bm25_index: Optional[BM25Okapi] = None
         self._tokenized_corpus: List[List[str]] = []
+        self._indexed_ids = set()
+        self._embedding_cache: Dict[str, List[float]] = {}
+        self._retrieval_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hybrid-retrieval")
 
     def index_chunks(self, chunks: List[DocumentChunk]) -> None:
         """Index chunks into both vector store and local BM25 index."""
         if not chunks:
             return
 
-        # 1. Vector Store Indexing
-        texts = [c.text for c in chunks]
-        embeddings = self.embedding_service.embed_batch(texts)
-        self.vector_store.upsert_chunks(chunks, embeddings)
+        # 1. Incremental vector indexing. Existing chunk IDs are immutable and
+        # are safe to reuse across checkpoint resumes and replanning iterations.
+        new_chunks = [c for c in chunks if c.id not in self._indexed_ids]
+        if not new_chunks:
+            logger.info("hybrid_index_skip existing_chunks=%d", len(chunks))
+            return
+        texts = [c.text for c in new_chunks]
+        missing = []
+        missing_indices = []
+        embeddings = [None] * len(new_chunks)
+        for index, text in enumerate(texts):
+            cache_key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            cached = self._embedding_cache.get(cache_key)
+            if cached is None:
+                missing.append(text)
+                missing_indices.append(index)
+            else:
+                embeddings[index] = cached
+        if missing:
+            generated = self.embedding_service.embed_batch(missing)
+            for index, vector in zip(missing_indices, generated):
+                cache_key = hashlib.sha256(texts[index].encode("utf-8")).hexdigest()
+                if len(self._embedding_cache) >= settings.EMBEDDING_CACHE_SIZE:
+                    self._embedding_cache.pop(next(iter(self._embedding_cache)))
+                self._embedding_cache[cache_key] = vector
+                embeddings[index] = vector
+        self.vector_store.upsert_chunks(new_chunks, embeddings)
+        self._indexed_ids.update(c.id for c in new_chunks)
 
         # 2. BM25 Indexing
-        existing_ids = {c.id for c in self._bm25_corpus}
-        for c in chunks:
-            if c.id in existing_ids:
-                continue
+        for c in new_chunks:
             self._bm25_corpus.append(c)
             tokens = self._tokenize(c.text)
             self._tokenized_corpus.append(tokens)
@@ -90,15 +117,17 @@ class HybridRetriever:
 
         # 1. Vector Search
         query_vector = self.embedding_service.embed_text(query)
-        vector_results = self.vector_store.search(
-            query_vector=query_vector,
-            top_k=max(top_k * 2, 10),
-            source_id_filter=source_id_filter,
-            document_id_filter=document_id_filter,
+        vector_future = self._retrieval_executor.submit(
+            self.vector_store.search,
+            query_vector,
+            max(top_k * 2, 10),
+            source_id_filter,
+            document_id_filter,
         )
 
         if not use_hybrid or not self._bm25_index or len(self._bm25_corpus) == 0:
             # Fall back to pure vector retrieval
+            vector_results = vector_future.result()
             out: List[RetrievalResult] = []
             for item in vector_results[:top_k]:
                 out.append(
@@ -117,8 +146,12 @@ class HybridRetriever:
             return out
 
         # 2. BM25 Search
-        query_tokens = self._tokenize(query)
-        bm25_scores = self._bm25_index.get_scores(query_tokens)
+        bm25_future = self._retrieval_executor.submit(
+            self._bm25_index.get_scores,
+            self._tokenize(query),
+        )
+        vector_results = vector_future.result()
+        bm25_scores = bm25_future.result()
 
         # Rank BM25 hits
         scored_bm25 = []

@@ -117,6 +117,6 @@ def test_orchestration_prompt_injection_safety(mock_tool_exec, api_client):
     resp = api_client.post("/api/orchestration/research", json=payload)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] == "completed"
-    # Ensure system was not hijacked
-    assert data["final_report"] is not None
+    assert data["status"] == "blocked"
+    assert data["security_decision"]["outcome"] == "BLOCKED"
+    mock_tool_exec.assert_not_called()

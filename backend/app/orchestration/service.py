@@ -20,6 +20,7 @@ from backend.app.orchestration.state import (
     ResearchWorkflowState,
     StructuredQuery,
 )
+from backend.app.audit import record_audit_event
 from backend.app.schemas.claim import Claim
 from backend.app.schemas.common import generate_uuid
 from backend.app.schemas.credibility import CredibilityAssessment
@@ -61,6 +62,7 @@ class ResearchExecutionResponse(BaseModel):
     credibility_assessments: List[CredibilityAssessment] = Field(default_factory=list)
     audit_logs: List[Dict[str, Any]] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
+    security_decision: Optional[Dict[str, Any]] = None
 
 
 class OrchestrationService:
@@ -91,6 +93,17 @@ class OrchestrationService:
         )
 
         self._session_cache[session_id] = state
+        record_audit_event(
+            "research_completed",
+            session_id=session_id,
+            status="completed" if state.is_completed else state.current_stage,
+            sources=len(state.discovered_sources),
+            documents=len(state.documents),
+            claims=len(state.claims),
+            evidence=len(state.evidence_records),
+            citations=len(state.final_report.references) if state.final_report else 0,
+            errors=state.errors,
+        )
 
         return self._format_response(state)
 
@@ -118,6 +131,10 @@ class OrchestrationService:
         )
         if pending_tasks:
             status = "incomplete"
+        elif state.current_stage == "security_blocked":
+            status = "blocked"
+        elif state.current_stage == "insufficient_evidence":
+            status = "insufficient_evidence"
         elif state.errors and not state.final_report:
             status = "failed"
         elif state.errors:
@@ -146,6 +163,7 @@ class OrchestrationService:
             credibility_assessments=state.credibility_assessments,
             audit_logs=state.audit_logs,
             errors=state.errors,
+            security_decision=state.security_decision,
         )
 
 

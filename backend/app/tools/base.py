@@ -3,9 +3,11 @@
 import asyncio
 from datetime import datetime, timezone
 import logging
+import re
 import time
 from typing import Any, Callable, Dict, Optional, Type
 from pydantic import BaseModel, ValidationError
+from backend.app.tools.security import SecurityError
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +86,12 @@ class BaseTool:
                 last_error = e
                 logger.warning(f"Tool '{self.name}' failed on attempt {attempt}: {e}")
 
-            if attempt <= self.max_retries:
+            retryable = self._is_retryable_error(last_error)
+            if retryable and attempt <= self.max_retries:
                 await asyncio.sleep(self.retry_delay * attempt)
+            elif not retryable:
+                logger.info("tool_permanent_failure tool=%s error=%s", self.name, last_error)
+                break
 
         elapsed = (time.perf_counter() - start_time) * 1000
         return ToolExecutionResult(
@@ -95,6 +101,14 @@ class BaseTool:
             execution_time_ms=elapsed,
             timestamp=now_iso,
         )
+
+    @staticmethod
+    def _is_retryable_error(error: Optional[Exception]) -> bool:
+        """Avoid retrying validation, security, and permanent HTTP client errors."""
+        if error is None or isinstance(error, (SecurityError, ValueError)):
+            return False
+        message = str(error).lower()
+        return not bool(re.search(r"\bhttp(?: error)?\s+4\d\d\b|\bstatus(?: code)?\s+4\d\d\b", message))
 
     async def _execute(self, params: BaseModel) -> Any:
         """Core execution logic to be implemented by child classes."""

@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     GROQ_MODEL: str = "openai/gpt-oss-120b"
     LLM_TIMEOUT_SECONDS: float = 30.0
     LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_BASE_DELAY_SECONDS: float = 0.25
+    EXTRACTION_MAX_CONCURRENCY: int = 8
+    EMBEDDING_CACHE_SIZE: int = 4096
     MAX_REPORT_CITATIONS: int = 50
     CORS_ALLOWED_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
 

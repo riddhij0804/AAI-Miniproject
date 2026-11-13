@@ -75,14 +75,16 @@ class WebpageReaderTool(BaseTool):
         extracted_data = self._parse_html(html_text, fetch_url)
 
         # 4. Check for prompt injection in extracted text (warn and sanitize)
-        has_injection, pattern = PromptInjectionGuard.contains_injection_pattern(extracted_data["content"])
-        if has_injection:
+        security_decision = PromptInjectionGuard.assess_text(extracted_data["content"])
+        if security_decision["outcome"] != "SAFE":
             logger.warning(
-                f"Suspicious prompt injection pattern detected in {params.url}: '{pattern}'. "
+                f"Suspicious prompt injection pattern detected in {params.url}: "
+                f"'{security_decision['matched_pattern']}'. "
                 f"Isolating as untrusted data."
             )
             extracted_data["metadata"]["prompt_injection_flag"] = True
-            extracted_data["metadata"]["injection_pattern"] = pattern
+            extracted_data["metadata"]["injection_pattern"] = security_decision["matched_pattern"]
+        extracted_data["metadata"]["security_decision"] = security_decision
 
         sanitized_content = PromptInjectionGuard.sanitize_untrusted_content(extracted_data["content"])
         extracted_data["content"] = sanitized_content

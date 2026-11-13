@@ -4,6 +4,7 @@ import difflib
 import json
 import logging
 import re
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
@@ -57,12 +58,19 @@ class EvidenceExtractorAgent:
         all_evidence: List[Evidence] = []
         verified_count = 0
         rejected_count = 0
+        eligible_chunks = [c for c in chunks if c.text and len(c.text.strip()) >= 30]
+        eligible_chunks = [
+            c for c in eligible_chunks
+            if PromptInjectionGuard.assess_text(c.text)["outcome"] != "REVIEW"
+        ]
+        semaphore = asyncio.Semaphore(settings.EXTRACTION_MAX_CONCURRENCY)
 
-        for chunk in chunks:
-            if not chunk.text or len(chunk.text.strip()) < 30:
-                continue
+        async def extract_one(chunk: DocumentChunk):
+            async with semaphore:
+                return chunk, await self._extract_from_chunk(chunk, research_objective)
 
-            raw_items = await self._extract_from_chunk(chunk, research_objective)
+        extracted = await asyncio.gather(*(extract_one(c) for c in eligible_chunks))
+        for chunk, raw_items in extracted:
 
             for item in raw_items:
                 # CRITICAL INVARIANT: Verify that evidence quote actually exists in the chunk!

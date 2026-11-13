@@ -40,6 +40,7 @@ from backend.app.orchestration.service import (
     default_orchestration_service,
 )
 from backend.app.orchestration.llm import LLMUnavailableError
+from backend.app.audit import export_audit_events
 
 # Configure logging
 logging.basicConfig(
@@ -104,6 +105,20 @@ def health_check():
         "app_name": settings.APP_NAME,
         "environment": settings.ENVIRONMENT,
     }
+
+
+@app.get("/api/audit/export", tags=["Audit"])
+def export_audit_endpoint(format: str = Query(default="json", pattern="^(json|csv)$"), session_id: Optional[str] = None):
+    """Export structured research, retrieval, retry, and security audit events."""
+    try:
+        content, media_type = export_audit_events(format, session_id)
+        return StreamingResponse(
+            iter([content]),
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename=research-audit.{format}"},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/sources/discover", response_model=List[Source], tags=["Source Discovery"])

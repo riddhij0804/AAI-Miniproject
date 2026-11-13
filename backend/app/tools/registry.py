@@ -9,6 +9,7 @@ from backend.app.tools.base import BaseTool, ToolExecutionResult
 from backend.app.tools.web_search import WebSearchTool
 from backend.app.tools.webpage_reader import WebpageReaderTool
 from backend.app.tools.pdf_reader import PDFReaderTool
+from backend.app.audit import record_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,13 @@ class ToolRegistry:
 
         result = await tool.run(**kwargs)
         self._log_audit(tool_name, kwargs, result)
+        record_audit_event(
+            "tool_execution",
+            tool=tool_name,
+            success=result.success,
+            duration_ms=round(result.execution_time_ms, 2),
+            error=result.error,
+        )
         return result
 
     def _log_audit(self, tool_name: str, args: Dict[str, Any], result: ToolExecutionResult) -> None:

@@ -35,6 +35,9 @@ class RetrievalMetricsReport(BaseModel):
     recall_at_5: float
     precision_at_3: float
     mrr: float
+    average_similarity: float = 0.0
+    successful_queries: int = 0
+    failed_queries: int = 0
 
 
 class EvidenceMetricsReport(BaseModel):
@@ -67,6 +70,9 @@ class EvaluationReport(BaseModel):
     mean_evidence_coverage: float
     mean_claim_support_rate: float
     overall_security_rejection_rate: float
+    average_similarity: float = 0.0
+    successful_queries: int = 0
+    failed_queries: int = 0
     case_results: List[BenchmarkResult] = Field(default_factory=list)
 
 
@@ -86,6 +92,9 @@ class SystemEvaluator:
         mrrs = []
         coverages = []
         support_rates = []
+        similarity_values = []
+        successful_queries = 0
+        failed_queries = 0
 
         for case in dataset:
             # 1. Prepare simulated sources & documents
@@ -129,6 +138,12 @@ class SystemEvaluator:
             # 3. Evaluate Retrieval
             retrieval_hits = retriever.retrieve(case.query, top_k=5)
             retrieved_ids = [h.chunk_id for h in retrieval_hits]
+            similarities = [h.relevance_score for h in retrieval_hits]
+            similarity_values.extend(similarities)
+            if retrieved_ids:
+                successful_queries += 1
+            else:
+                failed_queries += 1
 
             r3 = recall_at_k(retrieved_ids, ground_truth_chunk_ids, k=3)
             r5 = recall_at_k(retrieved_ids, ground_truth_chunk_ids, k=5)
@@ -162,6 +177,9 @@ class SystemEvaluator:
                         recall_at_5=r5,
                         precision_at_3=p3,
                         mrr=m,
+                        average_similarity=round(sum(similarities) / len(similarities), 4) if similarities else 0.0,
+                        successful_queries=1 if retrieved_ids else 0,
+                        failed_queries=0 if retrieved_ids else 1,
                     ),
                     evidence_metrics=EvidenceMetricsReport(
                         evidence_coverage=cov,
@@ -190,6 +208,9 @@ class SystemEvaluator:
             mean_evidence_coverage=mean_cov,
             mean_claim_support_rate=mean_sup,
             overall_security_rejection_rate=sec_report.prompt_injection_rejection_rate,
+            average_similarity=round(sum(similarity_values) / len(similarity_values), 4) if similarity_values else 0.0,
+            successful_queries=successful_queries,
+            failed_queries=failed_queries,
             case_results=case_results,
         )
 

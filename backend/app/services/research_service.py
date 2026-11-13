@@ -1,6 +1,7 @@
 """Clean integration service contract for teammate orchestration layer (e.g. LangGraph)."""
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
 
@@ -22,6 +23,7 @@ from backend.app.schemas.evidence import Evidence
 from backend.app.schemas.graph import GraphData
 from backend.app.schemas.session import ResearchContextView, ResearchSession, ResearchTask
 from backend.app.schemas.source import Source, SourceDiscoveryItem, SourceDiscoveryRequest
+from backend.app.audit import record_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +81,15 @@ class ResearchIntelligenceService:
     # 2. Document Reading
     async def read_documents(self, sources: List[Source]) -> List[Document]:
         """Acquire, parse, sanitize, and chunk documents from sources."""
-        documents = await self.reader_agent.read_documents(sources)
+        unique_sources = []
+        seen_urls = set()
+        for source in sources:
+            url = source.url.strip().lower().rstrip("/")
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            unique_sources.append(source)
+        documents = await self.reader_agent.read_documents(unique_sources)
 
         # Persist documents and index chunks into hybrid retriever
         all_chunks: List[DocumentChunk] = []
@@ -88,7 +98,24 @@ class ResearchIntelligenceService:
             all_chunks.extend(doc.chunks)
 
         if all_chunks:
-            self.retriever.index_chunks(all_chunks)
+            index_started = time.perf_counter()
+            try:
+                self.retriever.index_chunks(all_chunks)
+            except Exception as exc:
+                # Retrieval is an acceleration layer; it must not discard
+                # documents that are still usable for grounded extraction.
+                logger.error(
+                    "retrieval_index_failed chunks=%d index_ms=%.2f error=%s",
+                    len(all_chunks),
+                    (time.perf_counter() - index_started) * 1000,
+                    exc,
+                )
+            else:
+                logger.info(
+                    "retrieval_index_timing chunks=%d index_ms=%.2f",
+                    len(all_chunks),
+                    (time.perf_counter() - index_started) * 1000,
+                )
 
         return documents
 
@@ -138,12 +165,26 @@ class ResearchIntelligenceService:
         source_id_filter: Optional[str] = None,
     ) -> List[RetrievalResult]:
         """Retrieve top-k relevant evidence chunks preserving provenance."""
-        return self.retriever.retrieve(
+        started = time.perf_counter()
+        try:
+            results = self.retriever.retrieve(
             query=query,
             top_k=top_k,
             source_id_filter=source_id_filter,
             use_hybrid=True,
+            )
+        except Exception as exc:
+            record_audit_event("retrieval_failed", query=query, top_k=top_k, error=str(exc))
+            raise
+        record_audit_event(
+            "retrieval_completed",
+            query=query,
+            top_k=top_k,
+            result_count=len(results),
+            scores=[result.relevance_score for result in results],
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
         )
+        return results
 
     # 6. Claim Evidence View
     def get_claim_evidence(self, claim_id: str) -> Optional[ClaimEvidenceView]:
