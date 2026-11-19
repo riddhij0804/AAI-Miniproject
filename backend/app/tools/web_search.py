@@ -95,10 +95,9 @@ class WebSearchTool(BaseTool):
 
         # 3. For biomedical/clinical queries, query NCBI / PubMed Central (PMC) Open Access
         is_biomedical = any(k in params.query.lower() for k in [
-            "cause", "treatment", "symptom", "disease", "syndrome", "therapy",
-            "clinical", "etiology", "cancer", "health", "medical", "patient",
-            "drug", "diagnosis", "disorder", "biological", "pharmaceutical", "pathology",
-            "alopecia", "hair loss", "infection", "vaccine", "bacteria", "virus"
+            "clinical", "medical", "health", "disease", "treatment", "therapy",
+            "symptom", "syndrome", "pathology", "etiology", "patient", "drug",
+            "pharmaceutical", "biological", "diagnosis", "disorder", "cause"
         ])
         if (is_biomedical or not results) and len(results) < params.max_results:
             try:
