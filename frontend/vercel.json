@@ -1,0 +1,12 @@
+{
+    "rewrites": [
+        {
+            "source": "/api/:path*",
+            "destination": "https://aai-research-backend.onrender.com/api/:path*"
+        },
+        {
+            "source": "/health",
+            "destination": "https://aai-research-backend.onrender.com/health"
+        }
+    ]
+}
