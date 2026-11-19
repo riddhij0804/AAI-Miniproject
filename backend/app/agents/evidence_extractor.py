@@ -78,8 +78,7 @@ class EvidenceExtractorAgent:
 
         async def extract_one(chunk: DocumentChunk):
             async with semaphore:
-                use_llm = chunk.id in llm_eligible_ids
-                return chunk, await self._extract_from_chunk(chunk, research_objective, use_llm=use_llm)
+                return chunk, await self._extract_from_chunk(chunk, research_objective)
 
         extracted = await asyncio.gather(*(extract_one(c) for c in eligible_chunks))
         for chunk, raw_items in extracted:
@@ -164,10 +163,11 @@ class EvidenceExtractorAgent:
         return False, ""
 
     async def _extract_from_chunk(
-        self, chunk: DocumentChunk, research_objective: str, use_llm: bool = False
+        self, chunk: DocumentChunk, research_objective: str, use_llm: Optional[bool] = None
     ) -> List[RawExtractedClaim]:
         """Dispatch extraction to LLM (if selectively enabled) or deterministic high-precision sentence extractor."""
-        if use_llm and (settings.OPENAI_API_KEY or settings.GEMINI_API_KEY or settings.GROQ_API_KEY):
+        should_use_llm = settings.EXTRACTION_USE_LLM if use_llm is None else use_llm
+        if should_use_llm and (settings.OPENAI_API_KEY or settings.GEMINI_API_KEY or settings.GROQ_API_KEY):
             try:
                 llm_results = await self._call_llm_extractor(chunk, research_objective)
                 if llm_results:

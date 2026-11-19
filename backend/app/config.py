@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     CHECKPOINT_DATABASE_PATH: str = "./research_checkpoints.db"
 
     # Embeddings
-    EMBEDDING_PROVIDER: str = "auto"  # 'auto', 'fastembed', 'hash' (test/development only)
+    EMBEDDING_PROVIDER: str = "hash"  # 'hash' (<250MB RAM, recommended for Render free tier), 'fastembed', 'auto'
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
 
     # Web Search

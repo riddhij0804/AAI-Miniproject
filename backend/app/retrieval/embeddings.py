@@ -122,19 +122,19 @@ def get_embedding_service() -> BaseEmbeddingService:
     """Factory creating the configured embedding service."""
     provider = settings.EMBEDDING_PROVIDER.lower()
     if provider in {"hash", "mock"}:
-        if settings.ENVIRONMENT.lower() not in {"development", "test"}:
-            raise RuntimeError("Hash embeddings are restricted to development and test environments.")
+        logger.info("Using lightweight HashEmbeddingService (low-memory footprint).")
         return HashEmbeddingService(settings.VECTOR_DIMENSION)
     try:
         return FastEmbedService(
             model_name=settings.EMBEDDING_MODEL_NAME,
             dimension=settings.VECTOR_DIMENSION,
         )
-    except Exception:
-        if settings.ENVIRONMENT.lower() in {"development", "test"} and provider == "auto":
-            logger.warning("FastEmbed unavailable; using explicitly labeled development hash embeddings.")
-            return HashEmbeddingService(settings.VECTOR_DIMENSION)
-        raise
+    except Exception as exc:
+        logger.warning(
+            "FastEmbed unavailable or exceeded memory limits (%s); falling back to lightweight HashEmbeddingService.",
+            exc,
+        )
+        return HashEmbeddingService(settings.VECTOR_DIMENSION)
 
 
 # Global default embedding service
