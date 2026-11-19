@@ -101,6 +101,23 @@ class WebSearchTool(BaseTool):
                 logger.warning(err)
                 errors.append(err)
 
+        # 4. Filter out dictionary spam, definition sites, and translation scrapers
+        # unless user query specifically asks for a definition
+        is_def_query = any(w in params.query.lower() for w in ["define", "definition", "meaning of", "what does"])
+        if not is_def_query and results:
+            noise_domains = (
+                "merriam-webster.com/dictionary", "dictionary.cambridge.org",
+                "dictionary.com", "wiktionary.org", "thefreedictionary.com",
+                "collinsdictionary.com", "vocabulary.com", "dictall.com",
+                "iask.sina.com.cn", "iciba.com", "youdao.com", "dict.cn",
+            )
+            clean_results = [
+                r for r in results
+                if not any(noise in r.url.lower() for noise in noise_domains)
+            ]
+            if clean_results:
+                results = clean_results
+
         # Convert to dictionary output format
         return {
             "query": params.query,

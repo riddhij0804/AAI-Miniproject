@@ -1,6 +1,7 @@
 """Research Planner Agent decomposing objectives into actionable parallel/dependent tasks."""
 
 import logging
+import re
 from typing import List, Optional
 
 from backend.app.orchestration.llm import LLMClient, default_llm_client
@@ -28,6 +29,9 @@ class ResearchPlannerAgent:
             "You are an expert Research Planning Agent. "
             "Given a research objective, scope, key concepts, and sub-questions, decompose the research "
             "into 2 to 4 actionable, focused research tasks. "
+            "CRITICAL SEARCH QUERY RULE: The 'query' field in each task MUST be a concise 3 to 6 keyword search query "
+            "anchored directly to the primary subject matter (e.g. 'hair loss in women causes treatments', 'hair loss in women clinical prevalence'). "
+            "Never generate isolated dictionary terms (like 'prevalence' or 'distinguishes') or conversational questions as the search query. "
             "For each task, specify dependencies, if it can run in parallel, and evidence needed. "
             "Output JSON with format:\n"
             "{\n"
@@ -66,12 +70,23 @@ class ResearchPlannerAgent:
 
         raw_tasks = data.get("tasks", [])
         tasks: List[PlanTask] = []
+        primary_topic = structured_query.original_query.strip().rstrip("?").strip()
+        topic_words = set(re.findall(r"\w+", primary_topic.lower())) - {"what", "how", "the", "are", "and", "for", "with", "from"}
+
         for t in raw_tasks:
+            raw_q = t.get("query", structured_query.original_query).strip()
+            q_words = set(re.findall(r"\w+", raw_q.lower()))
+            # Anchor query if it doesn't already contain the primary topic keywords
+            if not (topic_words & q_words):
+                anchored_query = f"{primary_topic} {raw_q}".strip()
+            else:
+                anchored_query = raw_q
+
             tasks.append(
                 PlanTask(
                     task_id=t.get("task_id") or generate_uuid(),
                     title=t.get("title", "Research Task"),
-                    query=t.get("query", structured_query.original_query),
+                    query=anchored_query,
                     objective=t.get("objective", structured_query.research_objective),
                     dependencies=t.get("dependencies", []),
                     can_run_in_parallel=t.get("can_run_in_parallel", True),
@@ -111,10 +126,12 @@ class ResearchPlannerAgent:
 
         for idx, gap in enumerate(unanswered_questions[:3]):
             area = missing_areas[idx] if idx < len(missing_areas) else "Targeted gap"
+            clean_gap = re.sub(r"^(what|how|which|why|when|where|is|are|does|do)\s+(is|are|the|a|an)?\s*", "", gap, flags=re.IGNORECASE).strip("? ")
+            anchored_gap_q = f"{current_plan.objective[:40]} {clean_gap}".strip()
             task = PlanTask(
                 task_id=generate_uuid(),
                 title=f"Targeted Follow-up: {area}",
-                query=gap,
+                query=anchored_gap_q,
                 objective=f"Resolve empirical gap: {gap}",
                 dependencies=[],
                 can_run_in_parallel=True,

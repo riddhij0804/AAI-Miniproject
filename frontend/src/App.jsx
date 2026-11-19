@@ -48,14 +48,21 @@ export default function App() {
   const [supplemental, setSupplemental] = useState({ retrieval: [], graph: null, evaluation: null });
 
   useEffect(() => {
-    fetch(`${API_BASE}/health`).then((response) => response.ok ? response.json() : Promise.reject())
-      .then((data) => setHealth(data.status === 'healthy' ? 'online' : 'degraded'))
-      .catch(() => setHealth('offline'));
+    const checkHealth = () => {
+      fetch(`${API_BASE}/health`)
+        .then((response) => response.ok ? response.json() : Promise.reject())
+        .then((data) => setHealth(data.status === 'healthy' ? 'online' : 'degraded'))
+        .catch(() => setHealth('offline'));
+    };
+    checkHealth();
+    const interval = setInterval(checkHealth, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   const runResearch = async (event) => {
     event?.preventDefault();
     if (!question.trim() || running) return;
+    setHealth('online');
     setRunning(true); setError(''); setResult(null); setSupplemental({ retrieval: [], graph: null, evaluation: null }); setView('brief');
     try {
       const response = await fetch(`${API_BASE}/api/orchestration/research`, {
