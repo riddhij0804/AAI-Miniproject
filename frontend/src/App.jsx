@@ -34,6 +34,8 @@ const depthPresets = {
 const percent = (value) => `${Math.round((value || 0) * 100)}%`;
 const host = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return 'Unknown source'; } };
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? '' : 'https://aai-research-backend.onrender.com');
+
 export default function App() {
   const [question, setQuestion] = useState(presets[0].question);
   const [iterations, setIterations] = useState(3);
@@ -46,7 +48,7 @@ export default function App() {
   const [supplemental, setSupplemental] = useState({ retrieval: [], graph: null, evaluation: null });
 
   useEffect(() => {
-    fetch('/health').then((response) => response.ok ? response.json() : Promise.reject())
+    fetch(`${API_BASE}/health`).then((response) => response.ok ? response.json() : Promise.reject())
       .then((data) => setHealth(data.status === 'healthy' ? 'online' : 'degraded'))
       .catch(() => setHealth('offline'));
   }, []);
@@ -56,16 +58,26 @@ export default function App() {
     if (!question.trim() || running) return;
     setRunning(true); setError(''); setResult(null); setSupplemental({ retrieval: [], graph: null, evaluation: null }); setView('brief');
     try {
-      const response = await fetch('/api/orchestration/research', {
+      const response = await fetch(`${API_BASE}/api/orchestration/research`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: question.trim(), max_iterations: iterations, max_documents: depthPresets[iterations].documents }),
       });
+      if (!response.ok) {
+        let errDetail = `Server returned status ${response.status}`;
+        try {
+          const errData = await response.json();
+          errDetail = errData.detail || errDetail;
+        } catch {
+          const errText = await response.text();
+          if (errText) errDetail = errText.slice(0, 150);
+        }
+        throw new Error(errDetail);
+      }
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`);
       const [retrieval, graph, evaluation] = await Promise.allSettled([
-        fetch('/api/evidence/retrieve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: question.trim(), top_k: 5 }) }).then((response) => response.ok ? response.json() : []),
-        fetch(`/api/sessions/${data.session_id}/graph`).then((response) => response.ok ? response.json() : null),
-        fetch('/api/evaluate', { method: 'POST' }).then((response) => response.ok ? response.json() : null),
+        fetch(`${API_BASE}/api/evidence/retrieve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: question.trim(), top_k: 5 }) }).then((response) => response.ok ? response.json() : []),
+        fetch(`${API_BASE}/api/sessions/${data.session_id}/graph`).then((response) => response.ok ? response.json() : null),
+        fetch(`${API_BASE}/api/evaluate`, { method: 'POST' }).then((response) => response.ok ? response.json() : null),
       ]);
       const extras = {
         retrieval: retrieval.status === 'fulfilled' ? retrieval.value : [],

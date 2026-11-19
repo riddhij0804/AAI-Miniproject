@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     EXTRACTION_MAX_CONCURRENCY: int = 4
     EMBEDDING_CACHE_SIZE: int = 4096
     MAX_REPORT_CITATIONS: int = 50
-    CORS_ALLOWED_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
+    CORS_ALLOWED_ORIGINS: List[str] = ["*"]
 
     # Security
     BLOCKED_IP_NETWORKS: List[str] = [
