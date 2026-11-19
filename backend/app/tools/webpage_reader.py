@@ -45,7 +45,19 @@ class WebpageReaderTool(BaseTool):
                 return wiki_data
 
         # 3. Fetch page using httpx with size limits & streaming
-        headers = {"User-Agent": settings.DOC_READER_USER_AGENT}
+        headers = {
+            "User-Agent": settings.DOC_READER_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        }
 
         fetch_url = params.url
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, headers=headers) as client:
@@ -109,7 +121,7 @@ class WebpageReaderTool(BaseTool):
                 return None
 
             api_url = f"https://{parsed.netloc}/w/api.php"
-            headers = {"User-Agent": settings.DOC_READER_USER_AGENT}
+            headers = {"User-Agent": settings.WIKIPEDIA_USER_AGENT, "Accept": "application/json"}
             async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
                 resp = await client.get(
                     api_url,

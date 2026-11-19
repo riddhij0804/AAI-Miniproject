@@ -126,14 +126,21 @@ class WebSearchTool(BaseTool):
         # 4. Filter out dictionary spam, definition sites, and translation scrapers
         # unless user query specifically asks for a definition
         is_def_query = any(w in params.query.lower() for w in ["define", "definition", "meaning of", "what does"])
-        if not is_def_query and results:
-            noise_domains = (
-                "merriam-webster.com", "dictionary.cambridge.org",
-                "dictionary.com", "wiktionary.org", "thefreedictionary.com",
+        is_shopping_query = any(w in params.query.lower() for w in ["buy", "price", "store", "shop", "discount", "order"])
+        if results:
+            noise_domains = [
+                "dictionary.cambridge.org", "dictionary.com", "wiktionary.org", "thefreedictionary.com",
                 "collinsdictionary.com", "vocabulary.com", "dictall.com",
                 "iask.sina.com.cn", "iciba.com", "youdao.com", "dict.cn",
                 "thesaurus.com", "synonyms.com", "wordhippo.com",
-            )
+            ]
+            if not is_def_query:
+                noise_domains.append("merriam-webster.com")
+            if not is_shopping_query:
+                noise_domains.extend([
+                    "homedepot.com", "lowes.com", "costco.com", "amazon.com",
+                    "walmart.com", "ebay.com", "target.com", "bestbuy.com",
+                ])
             clean_results = [
                 r for r in results
                 if not any(noise in r.url.lower() for noise in noise_domains)
@@ -189,30 +196,32 @@ class WebSearchTool(BaseTool):
         return items
 
     async def _search_duckduckgo(self, query: str, max_results: int) -> List[SourceDiscoveryItem]:
-        """Search via DuckDuckGo asynchronously with multi-backend resilience for datacenter IPs."""
+        """Search via DuckDuckGo asynchronously with query relevance guard for sponsored/ad noise."""
         try:
             from ddgs import DDGS
         except ImportError:
             from duckduckgo_search import DDGS
 
         def _sync_ddg(q: str):
-            # Try multiple backends — default HTML scraping gets Cloudflare-blocked from datacenter IPs
-            for backend in ("lite", "api", "html"):
+            # Try default and specific search engines supported by ddgs
+            for backend in (None, "duckduckgo", "html"):
                 try:
                     with DDGS() as ddgs:
-                        results = list(ddgs.text(q, max_results=max_results, backend=backend))
+                        if backend:
+                            results = list(ddgs.text(q, max_results=max_results, backend=backend))
+                        else:
+                            results = list(ddgs.text(q, max_results=max_results))
                     if results:
-                        logger.info(f"DDG backend '{backend}' returned {len(results)} results")
+                        logger.info(f"DDG search returned {len(results)} results (backend={backend})")
                         return results
                 except TypeError:
-                    # Older library version doesn't support backend param — use default once
                     try:
                         with DDGS() as ddgs:
                             return list(ddgs.text(q, max_results=max_results))
                     except Exception:
                         return []
                 except Exception as e:
-                    logger.debug(f"DDG backend '{backend}' failed: {e}")
+                    logger.debug(f"DDG attempt failed (backend={backend}): {e}")
                     continue
             return []
 
@@ -223,21 +232,42 @@ class WebSearchTool(BaseTool):
             logger.warning(f"DDGS attempt failed on '{query}': {e}")
 
         # If zero results and query contained complex site/boolean filters, retry with clean core query
-        if not raw_results and ("(" in query or "site:" in query.lower()):
-            clean_q = re.sub(r"\(.*?\)", "", query).strip()
-            clean_q = re.sub(r"site:\S+", "", clean_q).strip()
-            if clean_q:
-                logger.info(f"Retrying DDGS with simplified query: '{clean_q}'")
-                try:
-                    raw_results = await asyncio.to_thread(_sync_ddg, clean_q)
-                except Exception as e:
-                    logger.warning(f"Simplified DDGS search failed: {e}")
+        clean_q = re.sub(r"\(.*?\)", "", query).strip()
+        clean_q = re.sub(r"site:\S+", "", clean_q).strip()
+        if not raw_results and clean_q and clean_q != query:
+            logger.info(f"Retrying DDGS with simplified query: '{clean_q}'")
+            try:
+                raw_results = await asyncio.to_thread(_sync_ddg, clean_q)
+            except Exception as e:
+                logger.warning(f"Simplified DDGS search failed: {e}")
+
+        # Extract meaningful terms to filter out sponsored ads with 0 topic overlap
+        _noise_words = {
+            "the", "a", "an", "is", "are", "was", "were", "for", "with", "from",
+            "what", "how", "why", "which", "who", "where", "when", "in", "on", "at",
+            "to", "of", "and", "or", "by", "about", "all", "its", "it"
+        }
+        query_terms = set(re.findall(r"\w+", clean_q.lower())) - _noise_words
 
         items: List[SourceDiscoveryItem] = []
         for r in raw_results:
             url = r.get("href", "")
             title = r.get("title", "Untitled Source")
             snippet = r.get("body", "")
+
+            # Relevance guard: drop completely unrelated sponsored/ad links
+            if query_terms:
+                doc_text = f"{title} {snippet} {url}".lower()
+                doc_words = set(re.findall(r"\w+", doc_text))
+                # Check direct or prefix/stem match
+                has_overlap = any(
+                    qt in doc_words or any(dw.startswith(qt[:4]) for dw in doc_words if len(qt) >= 4)
+                    for qt in query_terms
+                )
+                if not has_overlap:
+                    logger.debug(f"Discarding off-topic search result: '{title}' ({url})")
+                    continue
+
             publisher, source_type = infer_publisher_and_type(url, title)
 
             items.append(
@@ -258,7 +288,7 @@ class WebSearchTool(BaseTool):
         import httpx
         clean_q = re.sub(r"\(.*?\)", "", query).strip()
         clean_q = re.sub(r"site:\S+", "", clean_q).strip()
-        headers = {"User-Agent": settings.DOC_READER_USER_AGENT}
+        headers = {"User-Agent": settings.WIKIPEDIA_USER_AGENT, "Accept": "application/json"}
 
         # Stop words for relevance scoring
         _STOP = {
