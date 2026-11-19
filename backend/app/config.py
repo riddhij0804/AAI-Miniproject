@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # LLM Settings for Extraction & Credibility
     LLM_PROVIDER: str = "auto"  # 'auto', 'nvidia', 'gemini', 'groq', 'openai'
     NVIDIA_API_KEY: Optional[str] = None
-    NVIDIA_MODEL: str = "nvidia/nemotron-3-ultra-550b-a55b"
+    NVIDIA_MODEL: str = "nvidia/nemotron-3.5-bolt-e4b"
     NVIDIA_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
@@ -62,10 +62,10 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    LLM_TIMEOUT_SECONDS: float = 30.0
-    LLM_MAX_RETRIES: int = 3
+    LLM_TIMEOUT_SECONDS: float = 20.0
+    LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BASE_DELAY_SECONDS: float = 0.5
-    LLM_MAX_RPM: int = 12
+    LLM_MAX_RPM: int = 60
     EXTRACTION_USE_LLM: bool = False
     EXTRACTION_LLM_MAX_CHUNKS: int = 3
     EXTRACTION_MAX_CONCURRENCY: int = 4
