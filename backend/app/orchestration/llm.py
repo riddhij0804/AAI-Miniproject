@@ -214,7 +214,10 @@ class LLMClient:
                     request=response.request,
                     response=response,
                 )
-            content = response.json()["choices"][0]["message"]["content"]
+            message_data = response.json()["choices"][0]["message"]
+            content = message_data.get("content") or ""
+            if not content.strip() and message_data.get("reasoning_content"):
+                content = message_data["reasoning_content"]
             return self._parse_json_payload(content)
 
     async def _call_gemini_json(self, system_prompt: str, user_prompt: str) -> Optional[Dict[str, Any]]:
