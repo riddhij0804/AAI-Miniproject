@@ -55,12 +55,20 @@ class LLMClient:
         groq_key: Optional[str] = None,
     ):
         self.provider = provider or settings.LLM_PROVIDER
-        self.nvidia_key = settings.NVIDIA_API_KEY if nvidia_key is None else nvidia_key
+        any_explicit = any(k is not None for k in (nvidia_key, openai_key, gemini_key, groq_key))
+        if any_explicit:
+            self.nvidia_key = nvidia_key or ""
+            self.openai_key = openai_key or ""
+            self.gemini_key = gemini_key or ""
+            self.groq_key = groq_key or ""
+        else:
+            self.nvidia_key = settings.NVIDIA_API_KEY or ""
+            self.openai_key = settings.OPENAI_API_KEY or ""
+            self.gemini_key = settings.GEMINI_API_KEY or ""
+            self.groq_key = settings.GROQ_API_KEY or ""
+
         self.nvidia_model = settings.NVIDIA_MODEL
         self.nvidia_base_url = settings.NVIDIA_BASE_URL
-        self.openai_key = settings.OPENAI_API_KEY if openai_key is None else openai_key
-        self.gemini_key = settings.GEMINI_API_KEY if gemini_key is None else gemini_key
-        self.groq_key = settings.GROQ_API_KEY if groq_key is None else groq_key
         self.openai_model = settings.OPENAI_MODEL
         self.gemini_model = settings.GEMINI_MODEL
         self.groq_model = settings.GROQ_MODEL

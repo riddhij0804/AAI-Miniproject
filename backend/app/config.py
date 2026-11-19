@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # LLM Settings for Extraction & Credibility
     LLM_PROVIDER: str = "auto"  # 'auto', 'nvidia', 'gemini', 'groq', 'openai'
     NVIDIA_API_KEY: Optional[str] = None
-    NVIDIA_MODEL: str = "deepseek-ai/deepseek-v4.1-flash"
+    NVIDIA_MODEL: str = "nvidia/nemotron-3-ultra-550b-a55b"
     NVIDIA_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
