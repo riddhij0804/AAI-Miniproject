@@ -140,6 +140,9 @@ class EvidenceGraphService:
             claim_ids = list(nodes.keys())
             if claim_ids:
                 ev_query = select(EvidenceModel).where(EvidenceModel.claim_id.in_(claim_ids))
+            elif session_id:
+                # This session has no claims yet; do not leak unrelated evidence from previous runs
+                return GraphData(nodes=[], edges=[])
             else:
                 ev_query = select(EvidenceModel).limit(100)
 
