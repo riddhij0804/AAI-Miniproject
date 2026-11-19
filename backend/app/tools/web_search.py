@@ -90,11 +90,11 @@ class WebSearchTool(BaseTool):
                 logger.warning(err)
                 errors.append(err)
 
-        # 3. For health/biomedical queries or when DDG returned 0, query NCBI / PubMed Central (PMC)
+        # 3. For biomedical/clinical queries or when DDG returned 0, query NCBI / PubMed Central (PMC)
         is_biomedical = any(k in params.query.lower() for k in [
             "cause", "treatment", "symptom", "disease", "syndrome", "therapy",
-            "clinical", "etiology", "loss", "cancer", "health", "medical", "patient",
-            "alopecia", "hair", "drug", "diagnosis", "disorder"
+            "clinical", "etiology", "cancer", "health", "medical", "patient",
+            "drug", "diagnosis", "disorder", "biological", "pharmaceutical", "pathology"
         ])
         if (is_biomedical or not results) and len(results) < params.max_results:
             try:

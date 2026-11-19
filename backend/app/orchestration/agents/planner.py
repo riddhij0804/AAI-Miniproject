@@ -30,7 +30,7 @@ class ResearchPlannerAgent:
             "Given a research objective, scope, key concepts, and sub-questions, decompose the research "
             "into 2 to 4 actionable, focused research tasks. "
             "CRITICAL SEARCH QUERY RULE: The 'query' field in each task MUST be a concise 3 to 6 keyword search query "
-            "anchored directly to the primary subject matter (e.g. 'hair loss in women causes treatments', 'hair loss in women clinical prevalence'). "
+            "anchored directly to the primary subject matter (e.g. 'renewable energy adoption trends', 'quantum computing error mitigation'). "
             "Never generate isolated dictionary terms (like 'prevalence' or 'distinguishes') or conversational questions as the search query. "
             "For each task, specify dependencies, if it can run in parallel, and evidence needed. "
             "Output JSON with format:\n"
