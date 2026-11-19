@@ -46,3 +46,22 @@ async def test_auto_provider_fails_over_from_gemini_to_groq(monkeypatch):
     monkeypatch.setattr(client, "_call_gemini_json", gemini_failure)
     monkeypatch.setattr(client, "_call_groq_json", groq_success)
     assert await client.generate_json("system", "user") == {"provider": "groq"}
+
+
+@pytest.mark.asyncio
+async def test_nvidia_provider_returns_structured_object(monkeypatch):
+    client = LLMClient(provider="nvidia", nvidia_key="nvapi-test-key")
+
+    async def fake_nvidia(_system, _user):
+        return {"model": "deepseek-v4.1-flash", "answer": "ok"}
+
+    monkeypatch.setattr(client, "_call_nvidia_json", fake_nvidia)
+    result = await client.generate_json("system", "user")
+    assert result == {"model": "deepseek-v4.1-flash", "answer": "ok"}
+
+
+def test_parse_json_payload_markdown_and_substring():
+    raw_markdown = "Here is the response:\n```json\n{\"status\": \"success\", \"val\": 42}\n```\nHope that helps!"
+    parsed = LLMClient._parse_json_payload(raw_markdown)
+    assert parsed == {"status": "success", "val": 42}
+

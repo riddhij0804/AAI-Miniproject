@@ -52,7 +52,10 @@ class Settings(BaseSettings):
     DEFAULT_CHUNK_OVERLAP: int = 150  # characters
 
     # LLM Settings for Extraction & Credibility
-    LLM_PROVIDER: str = "auto"  # 'auto', 'gemini', 'groq', 'openai'
+    LLM_PROVIDER: str = "auto"  # 'auto', 'nvidia', 'gemini', 'groq', 'openai'
+    NVIDIA_API_KEY: Optional[str] = None
+    NVIDIA_MODEL: str = "deepseek-ai/deepseek-v4.1-flash"
+    NVIDIA_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
     GEMINI_API_KEY: Optional[str] = None

@@ -530,7 +530,7 @@ class ResearchWorkflowOrchestrator:
             )
         if not default_llm_client.has_active_key:
             raise LLMUnavailableError(
-                "Research execution is blocked: configure GEMINI_API_KEY or GROQ_API_KEY."
+                "Research execution is blocked: configure NVIDIA_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY."
             )
         record_audit_event("research_started", session_id=sess_id, query=question)
         initial_state = ResearchWorkflowState(
