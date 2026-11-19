@@ -58,7 +58,7 @@ class EvidenceExtractorAgent:
         all_evidence: List[Evidence] = []
         verified_count = 0
         rejected_count = 0
-        eligible_chunks = [c for c in chunks if c.text and len(c.text.strip()) >= 30]
+        eligible_chunks = [c for c in chunks if c.text and len(c.text.strip()) >= 200]
         eligible_chunks = [
             c for c in eligible_chunks
             if PromptInjectionGuard.assess_text(c.text)["outcome"] != "REVIEW"
@@ -226,7 +226,7 @@ class EvidenceExtractorAgent:
 
     def _deterministic_extract(self, chunk: DocumentChunk, research_objective: str) -> List[RawExtractedClaim]:
         """Deterministic extractor that identifies informative, fact-bearing sentences containing quantitative data or key verbs."""
-        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", chunk.text) if len(s.strip()) > 35]
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", chunk.text) if len(s.strip()) > 60 and len(s.strip().split()) >= 8]
         objective_words = set(re.findall(r"\w+", research_objective.lower())) - {"what", "how", "the", "are", "and", "for", "with", "from"}
         noise_filters = (
             "table of contents", "disambiguation", "menu browse", "all rights reserved",
@@ -252,6 +252,10 @@ class EvidenceExtractorAgent:
                 claim_text = s
                 if claim_text.endswith("."):
                     claim_text = claim_text[:-1]
+
+                # Reject too-short claims (navigation fragments, single words)
+                if len(claim_text) < 25:
+                    continue
 
                 candidates.append(
                     RawExtractedClaim(

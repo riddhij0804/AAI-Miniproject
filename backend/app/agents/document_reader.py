@@ -85,6 +85,12 @@ class DocumentReaderAgent:
 
                 data = exec_result.data or {}
                 content = data.get("content", "")
+
+                # Quality gate: skip documents with insufficient real content
+                if len(content.strip()) < 200:
+                    logger.warning(f"Skipping '{url}': insufficient content ({len(content.strip())} chars)")
+                    return None
+
                 title = data.get("title") or source.title or "Untitled Document"
                 doc_type = DocumentType.PDF if is_pdf else DocumentType.HTML
                 pub_date: Optional[datetime] = None

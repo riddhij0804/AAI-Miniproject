@@ -110,7 +110,7 @@ class WebSearchTool(BaseTool):
                 errors.append(err)
 
         # 4. Tertiary fallback to Wikipedia Full-Text Search if more sources needed
-        if not results or len(results) < 2:
+        if len(results) < params.max_results:
             try:
                 wiki_results = await self._search_wikipedia(params.query, params.max_results - len(results))
                 if wiki_results:
@@ -128,10 +128,11 @@ class WebSearchTool(BaseTool):
         is_def_query = any(w in params.query.lower() for w in ["define", "definition", "meaning of", "what does"])
         if not is_def_query and results:
             noise_domains = (
-                "merriam-webster.com/dictionary", "dictionary.cambridge.org",
+                "merriam-webster.com", "dictionary.cambridge.org",
                 "dictionary.com", "wiktionary.org", "thefreedictionary.com",
                 "collinsdictionary.com", "vocabulary.com", "dictall.com",
                 "iask.sina.com.cn", "iciba.com", "youdao.com", "dict.cn",
+                "thesaurus.com", "synonyms.com", "wordhippo.com",
             )
             clean_results = [
                 r for r in results
@@ -188,15 +189,32 @@ class WebSearchTool(BaseTool):
         return items
 
     async def _search_duckduckgo(self, query: str, max_results: int) -> List[SourceDiscoveryItem]:
-        """Search via DuckDuckGo asynchronously using ddgs with automatic query simplification."""
+        """Search via DuckDuckGo asynchronously with multi-backend resilience for datacenter IPs."""
         try:
             from ddgs import DDGS
         except ImportError:
             from duckduckgo_search import DDGS
 
         def _sync_ddg(q: str):
-            with DDGS() as ddgs:
-                return list(ddgs.text(q, max_results=max_results))
+            # Try multiple backends — default HTML scraping gets Cloudflare-blocked from datacenter IPs
+            for backend in ("lite", "api", "html"):
+                try:
+                    with DDGS() as ddgs:
+                        results = list(ddgs.text(q, max_results=max_results, backend=backend))
+                    if results:
+                        logger.info(f"DDG backend '{backend}' returned {len(results)} results")
+                        return results
+                except TypeError:
+                    # Older library version doesn't support backend param — use default once
+                    try:
+                        with DDGS() as ddgs:
+                            return list(ddgs.text(q, max_results=max_results))
+                    except Exception:
+                        return []
+                except Exception as e:
+                    logger.debug(f"DDG backend '{backend}' failed: {e}")
+                    continue
+            return []
 
         raw_results = []
         try:
@@ -236,11 +254,37 @@ class WebSearchTool(BaseTool):
         return items
 
     async def _search_wikipedia(self, query: str, max_results: int) -> List[SourceDiscoveryItem]:
-        """Authoritative tertiary search via Wikipedia Full-Text Search API (Elasticsearch/CirrusSearch)."""
+        """Authoritative search via Wikipedia Full-Text Search API with relevance filtering."""
         import httpx
         clean_q = re.sub(r"\(.*?\)", "", query).strip()
         clean_q = re.sub(r"site:\S+", "", clean_q).strip()
         headers = {"User-Agent": settings.DOC_READER_USER_AGENT}
+
+        # Stop words for relevance scoring
+        _STOP = {
+            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+            "had", "do", "does", "did", "will", "would", "could", "should", "may", "might",
+            "can", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into",
+            "through", "during", "before", "after", "between", "out", "over", "under",
+            "again", "then", "here", "there", "when", "where", "why", "how", "all", "each",
+            "both", "more", "most", "other", "some", "no", "not", "only", "so", "than",
+            "very", "just", "and", "or", "if", "but", "what", "which", "who", "it", "its",
+            "this", "that", "about", "up", "down", "many", "much",
+        }
+
+        def _stem(w: str) -> str:
+            """Basic suffix stripping for plural/verb matching."""
+            for sfx in ("tion", "sion", "ment", "ness", "ity", "ing", "ies", "ous", "ive", "ed", "er", "ly", "es", "s"):
+                if w.endswith(sfx) and len(w) - len(sfx) >= 3:
+                    return w[:-len(sfx)]
+            return w
+
+        query_words = set(re.findall(r"\w+", clean_q.lower())) - _STOP
+        query_stems = {_stem(w) for w in query_words}
+        min_overlap = 2 if len(query_words) >= 3 else 1
+
+        # Over-fetch for filtering headroom
+        fetch_limit = max(max_results * 3, 15)
 
         async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
             resp = await client.get(
@@ -249,7 +293,7 @@ class WebSearchTool(BaseTool):
                     "action": "query",
                     "list": "search",
                     "srsearch": clean_q,
-                    "srlimit": max_results,
+                    "srlimit": fetch_limit,
                     "utf8": "1",
                     "format": "json",
                 },
@@ -260,16 +304,38 @@ class WebSearchTool(BaseTool):
             data = resp.json()
             search_items = data.get("query", {}).get("search", [])
 
-            items: List[SourceDiscoveryItem] = []
+            # Hard filter: exclude disambiguation, media, list pages
+            hard_ok = []
             for item in search_items:
                 t = item.get("title", "")
                 t_lower = t.lower()
-                # Exclude disambiguation, entertainment, media, and list pages
                 if "(disambiguation)" in t_lower or t_lower.startswith("list of "):
                     continue
                 if any(k in t_lower for k in ["(film)", "(album)", "(song)", "(tv series)", "(character)", "(band)", "(video game)"]):
                     continue
+                hard_ok.append(item)
 
+            # Relevance scoring by stem overlap with title
+            scored = []
+            for item in hard_ok:
+                t = item.get("title", "")
+                title_words = set(re.findall(r"\w+", t.lower())) - _STOP
+                title_stems = {_stem(w) for w in title_words}
+                overlap = len(query_stems & title_stems)
+                scored.append((overlap, item))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            # Apply soft relevance threshold
+            passing = [(sc, it) for sc, it in scored if sc >= min_overlap]
+
+            # Fallback: if nothing passes, keep top 2 from CirrusSearch ranking
+            if not passing and scored:
+                passing = scored[:min(2, max_results)]
+
+            items: List[SourceDiscoveryItem] = []
+            for _, item in passing[:max_results]:
+                t = item.get("title", "")
                 raw_snippet = item.get("snippet", "")
                 clean_snippet = re.sub(r"<.*?>", "", raw_snippet).strip()
                 article_url = f"https://en.wikipedia.org/wiki/{t.replace(' ', '_')}"
