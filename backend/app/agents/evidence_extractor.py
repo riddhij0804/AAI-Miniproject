@@ -66,8 +66,9 @@ class EvidenceExtractorAgent:
         semaphore = asyncio.Semaphore(settings.EXTRACTION_MAX_CONCURRENCY)
 
         # Determine which chunks (if any) to process with LLM
+        has_llm_key = bool(settings.NVIDIA_API_KEY or settings.OPENAI_API_KEY or settings.GEMINI_API_KEY or settings.GROQ_API_KEY)
         llm_eligible_ids = set()
-        if settings.EXTRACTION_USE_LLM and (settings.OPENAI_API_KEY or settings.GEMINI_API_KEY or settings.GROQ_API_KEY):
+        if settings.EXTRACTION_USE_LLM and has_llm_key:
             objective_words = set(re.findall(r"\w+", research_objective.lower())) - {"what", "how", "the", "are", "and", "for", "with", "from"}
             scored = []
             for c in eligible_chunks:
@@ -78,7 +79,8 @@ class EvidenceExtractorAgent:
 
         async def extract_one(chunk: DocumentChunk):
             async with semaphore:
-                return chunk, await self._extract_from_chunk(chunk, research_objective)
+                use_llm_for_chunk = chunk.id in llm_eligible_ids if llm_eligible_ids else None
+                return chunk, await self._extract_from_chunk(chunk, research_objective, use_llm=use_llm_for_chunk)
 
         extracted = await asyncio.gather(*(extract_one(c) for c in eligible_chunks))
         for chunk, raw_items in extracted:
@@ -158,16 +160,34 @@ class EvidenceExtractorAgent:
             matched = clean_chunk[idx : idx + len(clean_quote)]
             return True, matched
 
-        # Do not accept punctuation-normalized or fuzzy text: those paths can
-        # return text that was not actually present in the source.
+        # 2. Resilient check with unicode quote/dash normalization
+        def _norm(s: str) -> str:
+            return (
+                s.replace("’", "'")
+                .replace("‘", "'")
+                .replace("“", '"')
+                .replace("”", '"')
+                .replace("—", "-")
+                .replace("–", "-")
+                .replace("\u00a0", " ")
+            )
+
+        norm_chunk = _norm(clean_chunk.lower())
+        norm_quote = _norm(clean_quote.lower())
+        idx_norm = norm_chunk.find(norm_quote)
+        if idx_norm != -1:
+            matched = clean_chunk[idx_norm : idx_norm + len(clean_quote)]
+            return True, matched
+
         return False, ""
 
     async def _extract_from_chunk(
         self, chunk: DocumentChunk, research_objective: str, use_llm: Optional[bool] = None
     ) -> List[RawExtractedClaim]:
         """Dispatch extraction to LLM (if selectively enabled) or deterministic high-precision sentence extractor."""
+        has_llm_key = bool(settings.NVIDIA_API_KEY or settings.OPENAI_API_KEY or settings.GEMINI_API_KEY or settings.GROQ_API_KEY)
         should_use_llm = settings.EXTRACTION_USE_LLM if use_llm is None else use_llm
-        if should_use_llm and (settings.OPENAI_API_KEY or settings.GEMINI_API_KEY or settings.GROQ_API_KEY):
+        if should_use_llm and has_llm_key:
             try:
                 llm_results = await self._call_llm_extractor(chunk, research_objective)
                 if llm_results:
@@ -209,10 +229,10 @@ class EvidenceExtractorAgent:
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", chunk.text) if len(s.strip()) > 35]
         objective_words = set(re.findall(r"\w+", research_objective.lower())) - {"what", "how", "the", "are", "and", "for", "with", "from"}
         noise_filters = (
-            "wikipedia", "encyclopedia", "table of contents", "disambiguation",
-            "menu browse", "all rights reserved", "terms of use", "cookie policy",
-            "privacy policy", "jump to navigation", "retrieved from", "editorial board",
-            "preview author", "citation info", "random entry", "chronological archives",
+            "table of contents", "disambiguation", "menu browse", "all rights reserved",
+            "terms of use", "cookie policy", "privacy policy", "jump to navigation",
+            "editorial board", "preview author", "citation info", "random entry",
+            "chronological archives", "retrieved from https:",
         )
 
         candidates: List[RawExtractedClaim] = []
@@ -222,7 +242,10 @@ class EvidenceExtractorAgent:
                 continue
             # Check overlap with objective
             overlap = sum(1 for w in objective_words if w in s_lower)
-            has_data = bool(re.search(r"\d+(\.\d+)?%?|\b(increased|decreased|caused|results|demonstrated|found|reported|developed|published|known|argued|emphasized)\b", s_lower))
+            has_data = bool(re.search(
+                r"\d+(\.\d+)?%?|\b(won|winner|champion|championship|final|victory|title|defeated|beat|score|increased|decreased|caused|results|demonstrated|found|reported|developed|published|known|argued|emphasized)\b",
+                s_lower
+            ))
 
             if overlap >= 1 or has_data:
                 # Clean claim text (derived summary of sentence)

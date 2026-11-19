@@ -47,17 +47,56 @@ export default function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [supplemental, setSupplemental] = useState({ retrieval: [], graph: null, evaluation: null });
 
+  const failureCountRef = useRef(0);
+
   useEffect(() => {
-    const checkHealth = () => {
-      fetch(`${API_BASE}/health`)
-        .then((response) => response.ok ? response.json() : Promise.reject())
-        .then((data) => setHealth(data.status === 'healthy' ? 'online' : 'degraded'))
-        .catch(() => setHealth('offline'));
+    let mounted = true;
+    const checkHealth = async () => {
+      const endpoints = [
+        `${API_BASE}/health`,
+        '/health',
+      ];
+      let healthy = false;
+
+      for (const endpoint of endpoints) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 6000);
+          const response = await fetch(endpoint, { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.status === 'healthy') {
+              healthy = true;
+              break;
+            }
+          }
+        } catch {
+          // Continue to next endpoint fallback
+        }
+      }
+
+      if (!mounted) return;
+
+      if (healthy) {
+        failureCountRef.current = 0;
+        setHealth('online');
+      } else {
+        failureCountRef.current += 1;
+        // Don't mark offline on a single transient hiccup, especially if results are present or actively running
+        if (failureCountRef.current >= 3 && !running) {
+          setHealth('offline');
+        }
+      }
     };
+
     checkHealth();
-    const interval = setInterval(checkHealth, 10000);
-    return () => clearInterval(interval);
-  }, []);
+    const interval = setInterval(checkHealth, 15000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [running]);
 
   const runResearch = async (event) => {
     event?.preventDefault();
@@ -109,7 +148,7 @@ export default function App() {
   return <div className="workspace">
     <header className="topbar">
       <div className="brand-lockup"><div className="brand-mark"><Compass size={19} /></div><div><div className="brand-name">Northstar</div><div className="brand-caption">Evidence research workspace</div></div></div>
-      <div className="topbar-actions"><span className={`system-state ${health}`}><span /> {health === 'online' ? 'Pipeline online' : health === 'checking' ? 'Checking pipeline' : 'Pipeline offline'}</span><a className="docs-link" href="http://localhost:8000/docs" target="_blank" rel="noreferrer">API docs <ArrowUpRight size={14} /></a><button className="icon-button mobile-menu" aria-label="Toggle navigation" onClick={() => setMobileNav(!mobileNav)}><Menu size={19} /></button></div>
+      <div className="topbar-actions"><span className={`system-state ${running ? 'online' : health}`}><span /> {running ? 'Researching...' : health === 'online' ? 'Pipeline online' : health === 'checking' ? 'Checking pipeline' : 'Pipeline offline'}</span><a className="docs-link" href={`${API_BASE}/docs`} target="_blank" rel="noreferrer">API docs <ArrowUpRight size={14} /></a><button className="icon-button mobile-menu" aria-label="Toggle navigation" onClick={() => setMobileNav(!mobileNav)}><Menu size={19} /></button></div>
     </header>
     <div className="app-body">
       <aside className={`sidebar ${mobileNav ? 'open' : ''}`}>

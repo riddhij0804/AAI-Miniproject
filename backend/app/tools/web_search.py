@@ -70,8 +70,9 @@ class WebSearchTool(BaseTool):
         if settings.TAVILY_API_KEY:
             try:
                 results = await self._search_tavily(params.query, params.max_results)
-                provider_used = "tavily"
-                logger.info(f"Tavily search successful for query '{params.query}': {len(results)} results")
+                if results:
+                    provider_used = "tavily"
+                    logger.info(f"Tavily search successful for query '{params.query}': {len(results)} results")
             except Exception as e:
                 err = f"Tavily search failed: {e}"
                 logger.warning(err)
@@ -89,15 +90,36 @@ class WebSearchTool(BaseTool):
                 logger.warning(err)
                 errors.append(err)
 
-        # 3. Tertiary fallback to Wikipedia OpenSearch if DDG returned 0 results
-        if not results:
+        # 3. For health/biomedical queries or when DDG returned 0, query NCBI / PubMed Central (PMC)
+        is_biomedical = any(k in params.query.lower() for k in [
+            "cause", "treatment", "symptom", "disease", "syndrome", "therapy",
+            "clinical", "etiology", "loss", "cancer", "health", "medical", "patient",
+            "alopecia", "hair", "drug", "diagnosis", "disorder"
+        ])
+        if (is_biomedical or not results) and len(results) < params.max_results:
             try:
-                results = await self._search_wikipedia(params.query, params.max_results)
-                if results:
-                    provider_used = "wikipedia_opensearch"
-                    logger.info(f"Wikipedia fallback search successful: {len(results)} results")
+                pmc_results = await self._search_pubmed(params.query, params.max_results - len(results))
+                if pmc_results:
+                    results.extend(pmc_results)
+                    if provider_used == "none":
+                        provider_used = "ncbi_pmc"
+                    logger.info(f"PubMed PMC search added {len(pmc_results)} scientific sources for query '{params.query}'")
             except Exception as e:
-                err = f"Wikipedia fallback search failed: {e}"
+                err = f"PubMed search failed: {e}"
+                logger.warning(err)
+                errors.append(err)
+
+        # 4. Tertiary fallback to Wikipedia Full-Text Search if more sources needed
+        if not results or len(results) < 2:
+            try:
+                wiki_results = await self._search_wikipedia(params.query, params.max_results - len(results))
+                if wiki_results:
+                    results.extend(wiki_results)
+                    if provider_used == "none":
+                        provider_used = "wikipedia_search"
+                    logger.info(f"Wikipedia full-text search added {len(wiki_results)} results")
+            except Exception as e:
+                err = f"Wikipedia full-text search failed: {e}"
                 logger.warning(err)
                 errors.append(err)
 
@@ -214,7 +236,7 @@ class WebSearchTool(BaseTool):
         return items
 
     async def _search_wikipedia(self, query: str, max_results: int) -> List[SourceDiscoveryItem]:
-        """Free, robust tertiary search via Wikipedia OpenSearch API."""
+        """Authoritative tertiary search via Wikipedia Full-Text Search API (Elasticsearch/CirrusSearch)."""
         import httpx
         clean_q = re.sub(r"\(.*?\)", "", query).strip()
         clean_q = re.sub(r"site:\S+", "", clean_q).strip()
@@ -224,10 +246,11 @@ class WebSearchTool(BaseTool):
             resp = await client.get(
                 "https://en.wikipedia.org/w/api.php",
                 params={
-                    "action": "opensearch",
-                    "search": clean_q,
-                    "limit": max_results,
-                    "namespace": 0,
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": clean_q,
+                    "srlimit": max_results,
+                    "utf8": "1",
                     "format": "json",
                 },
             )
@@ -235,21 +258,93 @@ class WebSearchTool(BaseTool):
                 return []
 
             data = resp.json()
-            titles = data[1] if len(data) > 1 else []
-            descriptions = data[2] if len(data) > 2 else []
-            urls = data[3] if len(data) > 3 else []
+            search_items = data.get("query", {}).get("search", [])
 
             items: List[SourceDiscoveryItem] = []
-            for t, desc, u in zip(titles, descriptions, urls):
+            for item in search_items:
+                t = item.get("title", "")
+                t_lower = t.lower()
+                # Exclude disambiguation, entertainment, media, and list pages
+                if "(disambiguation)" in t_lower or t_lower.startswith("list of "):
+                    continue
+                if any(k in t_lower for k in ["(film)", "(album)", "(song)", "(tv series)", "(character)", "(band)", "(video game)"]):
+                    continue
+
+                raw_snippet = item.get("snippet", "")
+                clean_snippet = re.sub(r"<.*?>", "", raw_snippet).strip()
+                article_url = f"https://en.wikipedia.org/wiki/{t.replace(' ', '_')}"
+
                 items.append(
                     SourceDiscoveryItem(
                         source_id=generate_uuid(),
                         title=t,
-                        url=u,
+                        url=article_url,
                         publisher="Wikipedia",
                         source_type=SourceType.EDUCATIONAL,
-                        snippet=desc or f"Wikipedia overview article for {t}",
-                        metadata={"provider": "wikipedia_opensearch"},
+                        snippet=clean_snippet or f"Wikipedia overview article for {t}",
+                        metadata={"provider": "wikipedia_search", "wordcount": item.get("wordcount")},
+                    )
+                )
+            return items
+
+    async def _search_pubmed(self, query: str, max_results: int) -> List[SourceDiscoveryItem]:
+        """Free, authoritative biomedical search via NCBI / PubMed Central (PMC) Open Access API."""
+        import httpx
+        clean_q = re.sub(r"\(.*?\)", "", query).strip()
+        clean_q = re.sub(r"site:\S+", "", clean_q).strip()
+        headers = {"User-Agent": settings.DOC_READER_USER_AGENT}
+
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            # 1. Query PMC for relevant IDs
+            search_resp = await client.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+                params={
+                    "db": "pmc",
+                    "term": f"{clean_q} AND open access[filter]",
+                    "retmode": "json",
+                    "retmax": max_results,
+                    "sort": "pub_date",
+                },
+            )
+            if search_resp.status_code != 200:
+                return []
+            id_list = search_resp.json().get("esearchresult", {}).get("idlist", [])
+            if not id_list:
+                return []
+
+            # 2. Query PMC for article summary data
+            summary_resp = await client.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+                params={
+                    "db": "pmc",
+                    "id": ",".join(id_list),
+                    "retmode": "json",
+                },
+            )
+            if summary_resp.status_code != 200:
+                return []
+
+            result_dict = summary_resp.json().get("result", {})
+            items: List[SourceDiscoveryItem] = []
+            for pmc_id in id_list:
+                doc = result_dict.get(pmc_id)
+                if not doc or not isinstance(doc, dict):
+                    continue
+                title = doc.get("title", f"PMC Article {pmc_id}")
+                source_journal = doc.get("source", "PubMed Central")
+                pub_date = doc.get("pubdate")
+                article_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmc_id}/"
+
+                items.append(
+                    SourceDiscoveryItem(
+                        source_id=generate_uuid(),
+                        title=title,
+                        url=article_url,
+                        publisher=f"NCBI / {source_journal}",
+                        source_type=SourceType.PEER_REVIEWED,
+                        published_at=pub_date,
+                        snippet=f"Peer-reviewed study from {source_journal} ({pub_date}): {title}",
+                        metadata={"provider": "ncbi_pmc", "pmc_id": pmc_id},
                     )
                 )
             return items

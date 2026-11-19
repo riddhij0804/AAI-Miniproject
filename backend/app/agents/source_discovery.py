@@ -33,11 +33,11 @@ class SourceDiscoveryAgent:
         """Execute source discovery using approved search tools with fallback."""
         logger.info(f"SourceDiscoveryAgent starting search for task '{task.task_id}': '{task.query}'")
 
-        # Construct optimized query string taking preferences into account
+        # Keep query clean and natural so search engines don't choke on boolean syntax
         query = task.query
-        if task.source_preferences:
-            prefs = " OR ".join(f"site:{pref}" if "." in pref else pref for pref in task.source_preferences)
-            query = f"{query} ({prefs})"
+        valid_domains = [p.strip() for p in (task.source_preferences or []) if "." in p and " " not in p and not p.startswith("http")]
+        if valid_domains and len(valid_domains) == 1:
+            query = f"{query} site:{valid_domains[0]}"
 
         # Execute web search through the controlled tool registry
         exec_result = await self.registry.execute_tool(

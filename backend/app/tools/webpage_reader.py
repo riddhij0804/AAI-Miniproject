@@ -37,8 +37,14 @@ class WebpageReaderTool(BaseTool):
         if not is_safe:
             raise SecurityError(f"Rejected unsafe URL '{params.url}': {error_reason}")
 
-        # 2. Fetch page using httpx with size limits & streaming
+        # 2. Check if Wikipedia URL - use official extracts API for 100% reliability and bot immunity
         timeout = params.timeout_seconds or self.timeout
+        if "wikipedia.org/wiki/" in params.url.lower():
+            wiki_data = await self._fetch_wikipedia_extract(params.url, timeout)
+            if wiki_data:
+                return wiki_data
+
+        # 3. Fetch page using httpx with size limits & streaming
         headers = {"User-Agent": settings.DOC_READER_USER_AGENT}
 
         fetch_url = params.url
@@ -90,6 +96,61 @@ class WebpageReaderTool(BaseTool):
         extracted_data["content"] = sanitized_content
 
         return extracted_data
+    async def _fetch_wikipedia_extract(self, url: str, timeout: float) -> Optional[Dict[str, Any]]:
+        """Fetch article extract directly from Wikipedia API to avoid bot blocking and HTML scraping issues."""
+        from urllib.parse import unquote, urlparse
+        try:
+            parsed = urlparse(url)
+            path_parts = parsed.path.split("/wiki/")
+            if len(path_parts) < 2:
+                return None
+            raw_title = unquote(path_parts[-1].split("#")[0]).strip()
+            if not raw_title:
+                return None
+
+            api_url = f"https://{parsed.netloc}/w/api.php"
+            headers = {"User-Agent": settings.DOC_READER_USER_AGENT}
+            async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                resp = await client.get(
+                    api_url,
+                    params={
+                        "action": "query",
+                        "prop": "extracts",
+                        "explaintext": "1",
+                        "titles": raw_title,
+                        "format": "json",
+                        "redirects": "1",
+                    },
+                )
+                if resp.status_code != 200:
+                    return None
+                data = resp.json()
+                pages = data.get("query", {}).get("pages", {})
+                for page_id, page_info in pages.items():
+                    if str(page_id) == "-1":
+                        continue
+                    extract = page_info.get("extract", "").strip()
+                    article_title = page_info.get("title", raw_title.replace("_", " "))
+                    if len(extract) > 100:
+                        logger.info(f"Successfully loaded Wikipedia article '{article_title}' via API ({len(extract)} chars)")
+                        return {
+                            "title": article_title,
+                            "url": url,
+                            "content": extract[:settings.DOC_READER_MAX_BYTES],
+                            "document_type": DocumentType.HTML.value,
+                            "author": "Wikipedia Contributors",
+                            "publication_date": None,
+                            "metadata": {
+                                "url": url,
+                                "provider": "wikipedia_api",
+                                "character_count": len(extract),
+                                "extracted_at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        }
+        except Exception as e:
+            logger.warning(f"Failed to fetch Wikipedia extract for '{url}': {e}")
+        return None
+
     def _parse_html(self, html: str, url: str) -> Dict[str, Any]:
         """Extract title, metadata, and clean body text from HTML."""
         try:

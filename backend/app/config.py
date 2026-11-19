@@ -42,9 +42,8 @@ class Settings(BaseSettings):
     DOC_READER_TIMEOUT_SECONDS: float = 12.0
     DOC_READER_MAX_BYTES: int = 15 * 1024 * 1024  # 15 MB
     DOC_READER_USER_AGENT: str = (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 "
-        "(Autonomous Research Agent)"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
 
     # Chunking
@@ -66,8 +65,8 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BASE_DELAY_SECONDS: float = 0.5
     LLM_MAX_RPM: int = 60
-    EXTRACTION_USE_LLM: bool = False
-    EXTRACTION_LLM_MAX_CHUNKS: int = 3
+    EXTRACTION_USE_LLM: bool = True
+    EXTRACTION_LLM_MAX_CHUNKS: int = 6
     EXTRACTION_MAX_CONCURRENCY: int = 4
     EMBEDDING_CACHE_SIZE: int = 4096
     MAX_REPORT_CITATIONS: int = 50
