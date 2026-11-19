@@ -78,23 +78,27 @@ class WebSearchTool(BaseTool):
                 logger.warning(err)
                 errors.append(err)
 
-        # 2. Fallback to DuckDuckGo / Open Search if Tavily wasn't used or failed
-        if not results:
+        # 2. Authoritative Wikipedia Full-Text Search (CirrusSearch Elasticsearch)
+        # Fast, 100% reliable, never blocked on datacenter IPs, high-quality encyclopedic content for ANY domain
+        if len(results) < params.max_results:
             try:
-                results = await self._search_duckduckgo(params.query, params.max_results)
-                if results:
-                    provider_used = "duckduckgo"
-                    logger.info(f"DuckDuckGo search successful for query '{params.query}': {len(results)} results")
+                wiki_results = await self._search_wikipedia(params.query, params.max_results - len(results))
+                if wiki_results:
+                    results.extend(wiki_results)
+                    if provider_used == "none":
+                        provider_used = "wikipedia_search"
+                    logger.info(f"Wikipedia full-text search added {len(wiki_results)} results")
             except Exception as e:
-                err = f"DuckDuckGo search failed: {e}"
+                err = f"Wikipedia full-text search failed: {e}"
                 logger.warning(err)
                 errors.append(err)
 
-        # 3. For biomedical/clinical queries or when DDG returned 0, query NCBI / PubMed Central (PMC)
+        # 3. For biomedical/clinical queries, query NCBI / PubMed Central (PMC) Open Access
         is_biomedical = any(k in params.query.lower() for k in [
             "cause", "treatment", "symptom", "disease", "syndrome", "therapy",
             "clinical", "etiology", "cancer", "health", "medical", "patient",
-            "drug", "diagnosis", "disorder", "biological", "pharmaceutical", "pathology"
+            "drug", "diagnosis", "disorder", "biological", "pharmaceutical", "pathology",
+            "alopecia", "hair loss", "infection", "vaccine", "bacteria", "virus"
         ])
         if (is_biomedical or not results) and len(results) < params.max_results:
             try:
@@ -109,17 +113,17 @@ class WebSearchTool(BaseTool):
                 logger.warning(err)
                 errors.append(err)
 
-        # 4. Tertiary fallback to Wikipedia Full-Text Search if more sources needed
+        # 4. Supplement with DuckDuckGo for general web coverage if more sources needed
         if len(results) < params.max_results:
             try:
-                wiki_results = await self._search_wikipedia(params.query, params.max_results - len(results))
-                if wiki_results:
-                    results.extend(wiki_results)
+                ddg_results = await self._search_duckduckgo(params.query, params.max_results - len(results))
+                if ddg_results:
+                    results.extend(ddg_results)
                     if provider_used == "none":
-                        provider_used = "wikipedia_search"
-                    logger.info(f"Wikipedia full-text search added {len(wiki_results)} results")
+                        provider_used = "duckduckgo"
+                    logger.info(f"DuckDuckGo search added {len(ddg_results)} results for query '{params.query}'")
             except Exception as e:
-                err = f"Wikipedia full-text search failed: {e}"
+                err = f"DuckDuckGo search failed: {e}"
                 logger.warning(err)
                 errors.append(err)
 
@@ -245,7 +249,10 @@ class WebSearchTool(BaseTool):
         _noise_words = {
             "the", "a", "an", "is", "are", "was", "were", "for", "with", "from",
             "what", "how", "why", "which", "who", "where", "when", "in", "on", "at",
-            "to", "of", "and", "or", "by", "about", "all", "its", "it"
+            "to", "of", "and", "or", "by", "about", "all", "its", "it",
+            "major", "minor", "secondary", "primary", "cause", "causes", "detail", "details",
+            "overview", "general", "basic", "criteria", "role", "roles", "case", "cases",
+            "effect", "effects", "study", "studies", "type", "types"
         }
         query_terms = set(re.findall(r"\w+", clean_q.lower())) - _noise_words
 
@@ -254,6 +261,10 @@ class WebSearchTool(BaseTool):
             url = r.get("href", "")
             title = r.get("title", "Untitled Source")
             snippet = r.get("body", "")
+
+            # Drop Wikipedia URLs from ddgs — ddgs uses Wikipedia opensearch internally as a broken fallback
+            if "wikipedia.org" in url.lower():
+                continue
 
             # Relevance guard: drop completely unrelated sponsored/ad links
             if query_terms:
@@ -300,6 +311,9 @@ class WebSearchTool(BaseTool):
             "both", "more", "most", "other", "some", "no", "not", "only", "so", "than",
             "very", "just", "and", "or", "if", "but", "what", "which", "who", "it", "its",
             "this", "that", "about", "up", "down", "many", "much",
+            "major", "minor", "secondary", "primary", "cause", "causes", "detail", "details",
+            "overview", "general", "basic", "criteria", "role", "roles", "case", "cases",
+            "effect", "effects", "study", "studies", "type", "types", "method", "methods",
         }
 
         def _stem(w: str) -> str:
@@ -334,7 +348,7 @@ class WebSearchTool(BaseTool):
             data = resp.json()
             search_items = data.get("query", {}).get("search", [])
 
-            # Hard filter: exclude disambiguation, media, list pages
+            # Hard filter: exclude disambiguation, media, list pages, and single-word generic articles
             hard_ok = []
             for item in search_items:
                 t = item.get("title", "")
@@ -342,6 +356,9 @@ class WebSearchTool(BaseTool):
                 if "(disambiguation)" in t_lower or t_lower.startswith("list of "):
                     continue
                 if any(k in t_lower for k in ["(film)", "(album)", "(song)", "(tv series)", "(character)", "(band)", "(video game)"]):
+                    continue
+                # Single-word generic title check (e.g. "Major", "Secondary", "Diagnosis", "Male", "Man")
+                if " " not in t.strip() and len(query_words) >= 2 and t.strip().lower() not in query_words:
                     continue
                 hard_ok.append(item)
 
@@ -356,12 +373,12 @@ class WebSearchTool(BaseTool):
 
             scored.sort(key=lambda x: x[0], reverse=True)
 
-            # Apply soft relevance threshold
+            # Apply soft relevance threshold (require at least 1 stem overlap)
             passing = [(sc, it) for sc, it in scored if sc >= min_overlap]
 
-            # Fallback: if nothing passes, keep top 2 from CirrusSearch ranking
+            # Fallback: if nothing passes min_overlap, keep top results with at least 1 stem match
             if not passing and scored:
-                passing = scored[:min(2, max_results)]
+                passing = [(sc, it) for sc, it in scored if sc >= 1][:min(2, max_results)]
 
             items: List[SourceDiscoveryItem] = []
             for _, item in passing[:max_results]:
