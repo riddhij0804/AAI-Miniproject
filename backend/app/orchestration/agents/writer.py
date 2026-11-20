@@ -143,12 +143,31 @@ class ReportWriterAgent:
             if isinstance(raw_kf, list) and raw_kf:
                 for item in raw_kf:
                     if isinstance(item, dict) and "topic_title" in item and "summary" in item:
+                        # Resilient parsing: ensure claims is a list of full strings, never iterated characters
+                        raw_claims = item.get("claims", [])
+                        if isinstance(raw_claims, str):
+                            lines = [line.strip().lstrip("-*•0123456789. ") for line in raw_claims.splitlines() if len(line.strip()) > 3]
+                            parsed_claims = lines if lines else ([raw_claims.strip()] if len(raw_claims.strip()) > 1 else [])
+                        elif isinstance(raw_claims, list):
+                            parsed_claims = [str(c).strip() for c in raw_claims if isinstance(c, (str, int, float)) and len(str(c).strip()) > 1]
+                        else:
+                            parsed_claims = []
+
+                        raw_cites = item.get("supporting_citations", [])
+                        if isinstance(raw_cites, str):
+                            lines = [line.strip().lstrip("-*•0123456789. ") for line in raw_cites.splitlines() if len(line.strip()) > 3]
+                            parsed_cites = lines if lines else ([raw_cites.strip()] if len(raw_cites.strip()) > 1 else [])
+                        elif isinstance(raw_cites, list):
+                            parsed_cites = [str(q).strip() for q in raw_cites if isinstance(q, (str, int, float)) and len(str(q).strip()) > 1]
+                        else:
+                            parsed_cites = []
+
                         key_findings.append(
                             KeyFindingTopic(
                                 topic_title=str(item["topic_title"]),
                                 summary=str(item["summary"]),
-                                claims=[str(c) for c in item.get("claims", []) if isinstance(c, (str, int, float))],
-                                supporting_citations=[str(q) for q in item.get("supporting_citations", []) if isinstance(q, (str, int, float))],
+                                claims=parsed_claims,
+                                supporting_citations=parsed_cites,
                             )
                         )
             if not key_findings:
@@ -195,7 +214,7 @@ class ReportWriterAgent:
             "MANDATORY REQUIREMENTS:\n"
             "1. Focus directly on answering the research objective using the verified factual findings and evidence quotes provided.\n"
             "2. 'executive_summary': Provide a 2-3 paragraph articulate, well-written analytical synthesis. Explain core historical/scientific facts, answer ambiguities or key questions, and highlight substantiated evidence. Never output web boilerplate, navigation menus, or disambiguation notices.\n"
-            "3. 'key_findings': Provide 2-4 thematic sections. Each item must have 'topic_title', 'summary' (a detailed analytical paragraph synthesizing that theme), 'claims' (relevant factual statements from the verified claims), and 'supporting_citations' (relevant excerpts from the provided evidence).\n"
+            "3. 'key_findings': Provide 2-4 thematic sections. Each item must have 'topic_title', 'summary' (a detailed analytical paragraph synthesizing that theme), 'claims' (a JSON array of 2-4 distinct full-sentence factual strings from the verified claims, e.g. [\"Sentence 1\", \"Sentence 2\"]), and 'supporting_citations' (a JSON array of relevant excerpt strings from the provided evidence). Never output 'claims' as a single string or character sequence.\n"
             "4. 'conclusion': Provide a comprehensive analytical synthesis addressing nuances, implications, and unanswered dimensions.\n"
             "5. Return strictly a JSON object with keys: 'title', 'executive_summary', 'key_findings', 'conclusion'."
         )
